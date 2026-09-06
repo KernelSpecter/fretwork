@@ -9,9 +9,14 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
+/* use a Chrome that is already installed when there is one, so a clone
+   does not have to download a second copy just to run the tests */
 const CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
 ].find((q) => fs.existsSync(q));
 
 const browser = await chromium.launch({

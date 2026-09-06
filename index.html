@@ -2529,9 +2529,32 @@ const KEYHELP = [
   ['Double click a knob', 'Back to where it started'],
 ];
 
+/* Anything you reach for with a pointer hands focus back to the instrument
+   afterwards. Without this a click on a dropdown or a knob leaves focus
+   sitting there, the guard below swallows every key, and the guitar goes
+   quiet until you happen to click the neck again. Keyboard activation is
+   left alone, so tabbing to a control still works. */
+function releaseFocus(el) {
+  if (el && typeof el.blur === 'function') el.blur();
+}
+document.addEventListener('change', (e) => {
+  if (e.target.tagName === 'SELECT') releaseFocus(e.target);
+});
+document.addEventListener('click', (e) => {
+  if (e.detail === 0) return;              // came from the keyboard, leave it
+  const el = e.target.closest && e.target.closest('button, select, .slot, .cbtn');
+  if (el && !el.closest('.sheet')) releaseFocus(el);
+});
+document.addEventListener('pointerup', (e) => {
+  const k = e.target.closest && e.target.closest('.knob');
+  if (k) releaseFocus(k);
+});
+
 const down = new Set();
 window.addEventListener('keydown', async (e) => {
-  if (e.target.tagName === 'SELECT' || e.target.classList.contains('knob')) return;
+  const t = e.target;
+  if (t && (t.tagName === 'SELECT' || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+            t.isContentEditable || (t.classList && t.classList.contains('knob')))) return;
   const k = e.key.toLowerCase();
   if (k === 'escape') { document.querySelectorAll('.sheet.open').forEach((s) => s.classList.remove('open')); return; }
   if (e.repeat) return;

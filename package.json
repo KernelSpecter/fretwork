@@ -1,0 +1,27 @@
+{
+  "name": "fretwork",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A playable guitar in one HTML file, built from six coupled digital waveguides. No samples.",
+  "license": "MIT",
+  "author": "KernelSpecter",
+  "homepage": "https://kernelspecter.github.io/fretwork/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KernelSpecter/fretwork.git"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "node dev/verify.mjs && node dev/check-data.mjs && node dev/keys.mjs && node dev/qa.mjs",
+    "test:dsp": "node dev/verify.mjs",
+    "test:data": "node dev/check-data.mjs",
+    "test:keys": "node dev/keys.mjs",
+    "test:ui": "node dev/qa.mjs",
+    "wav": "node dev/verify.mjs --wav",
+    "shots": "node dev/shoot.mjs && node dev/shoot.mjs --portrait",
+    "docs": "node dev/docshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

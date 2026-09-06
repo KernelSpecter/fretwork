@@ -17,9 +17,14 @@ const size = portrait ? { width: 412, height: 900 } : { width: 1440, height: 860
 
 /* use the Chrome that is already on the machine rather than pulling a
    second copy down just to take a screenshot */
+/* use a Chrome that is already installed when there is one, so a clone
+   does not have to download a second copy just to run the tests */
 const SYS_CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
 ].find((q) => fs.existsSync(q));
 
 const browser = await chromium.launch({

@@ -12,6 +12,8 @@ when the page was opened as `file://`, because the page's origin is opaque
 there, so the worklet is loaded from a `data:` URL instead, which works from
 both a file and a server, and the blob path is kept only as a fallback.
 
+![The neck, a Cadd9 ringing](docs/neck.png)
+
 ## Playing it
 
 Touch and mouse work the way a real guitar does: drag along a string on the
@@ -45,6 +47,8 @@ slowly and a fast one strumming fast. Any MIDI input plugged in is listened
 to as well, each note on routed to whichever string can reach that pitch
 below the twelfth fret, closest string first. The input mode is auto
 detected from what is present and the header lets you override it.
+
+![The solidbody, with some drive on it](docs/electric.png)
 
 ## How the sound is made
 
@@ -85,6 +89,8 @@ along the string: a real pickup only reads the string's motion at one fixed
 point, so it cancels whatever harmonic has a node there, which is most of
 what makes an electric guitar sound like its pickup position rather than
 like a generic string.
+
+![The chord book](docs/chords.png)
 
 ## The reference data
 
@@ -127,10 +133,23 @@ stereo WAV file you can save.
 
 ## Running the tests
 
+The page itself has no dependencies. The harnesses need Playwright, which is
+the only thing in `package.json`:
+
 ```
-node dev/verify.mjs      # the DSP engine, loaded straight out of index.html
-node dev/check-data.mjs  # the chord and tuning data
-node dev/keys.mjs        # the keyboard, in a real headless browser
+npm install
+npm test
+```
+
+They drive whichever Chrome is already installed. If there is not one,
+`npx playwright install chromium` gets a copy. Individually:
+
+```
+node dev/verify.mjs        # the DSP engine, loaded straight out of index.html
+node dev/check-data.mjs    # the chord and tuning data
+node dev/keys.mjs          # every documented key, in a real browser
+node dev/qa.mjs            # pointers, the tape, the sequencer, resizing, knob extremes
+node dev/verify.mjs --wav  # renders dev/demo.wav if you would rather listen
 ```
 
 The DSP harness reports 15 of 15 checks passed: worst tuning error across the
@@ -143,8 +162,14 @@ plucking at a fifth of the string suppresses the fifth harmonic by 21.9 dB
 and the tenth by 8.5 dB relative to their neighbours, and a scheduled
 six-string strum lands within 2 samples of where it was told to fire. The
 data checker reports 96 voicings, 9 tunings, and 16 progressions checked, no
-problems found. The keyboard harness presses every documented key in a real
-Chromium instance and reports 20 of 20 checks passing.
+problems found. The keyboard harness presses every documented key in a real browser and
+checks what the engine was actually told to do, 26 of 26 passing, including
+that an upstroke really does reach fewer strings than a downstroke. The wider
+harness drives pointers (two at once), all four guitars, all nine tunings,
+all six spaces, every knob at both extremes, the tape end to end including
+the WAV header fields, the sequencer while everything under it changes, and
+six viewport sizes from 320x480 to 2560x700: 24 of 24 passing, with the
+worst peak anywhere in that sweep measuring 0.98 of full scale.
 
 ## What it does not do
 
@@ -158,6 +183,8 @@ reproducing a specific guitar's. There is no save or load of a session,
 project file, or tab: the only persistent output is the WAV export. It does
 not remember your settings between visits, and there is no undo for a tape
 beyond clearing it and starting over.
+
+![On a phone](docs/phone.png)
 
 ## Licence
 

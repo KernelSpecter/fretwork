@@ -1,3 +1,5 @@
 node_modules/
 dev/demo.wav
+dev/shots/
+dev/qa-findings.json
 .DS_Store

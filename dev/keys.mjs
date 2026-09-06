@@ -8,9 +8,14 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
+/* use a Chrome that is already installed when there is one, so a clone
+   does not have to download a second copy just to run the tests */
 const CHROME = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
 ].find((q) => fs.existsSync(q));
 
 const browser = await chromium.launch({
@@ -204,6 +209,39 @@ await page.waitForTimeout(50);
 const leaked = plucks(await log()).length;
 await page.evaluate(() => document.activeElement.blur());
 check('typing into a control does not strum', leaked === 0, `${leaked} stray plucks`);
+
+/* ---- 11b. after touching a control, the keys must come back ---- */
+for (const [what, how] of [
+  ['a dropdown', async () => { await page.selectOption('#irSel', 'hall'); }],
+  ['a knob', async () => {
+    const k = await page.locator('.knob').first().boundingBox();
+    await page.mouse.move(k.x + k.width / 2, k.y + k.height / 2);
+    await page.mouse.down(); await page.mouse.move(k.x + k.width / 2, k.y + 4); await page.mouse.up();
+  }],
+  ['a chord slot', async () => { await page.locator('.slot').nth(1).click(); }],
+  ['the tempo box', async () => { await page.selectOption('#tempoSel', '120'); }],
+  ['a panel button', async () => { await page.click('#chordsBtn'); await page.keyboard.press('Escape'); }],
+]) {
+  await how();
+  await page.waitForTimeout(80);
+  await reset();
+  await page.keyboard.press('1');
+  await page.waitForTimeout(60);
+  const n = plucks(await log()).length;
+  const focus = await page.evaluate(() => document.activeElement.tagName + (document.activeElement.className ? '.' + String(document.activeElement.className).split(' ')[0] : ''));
+  check(`the number keys still play after using ${what}`, n === 1, `${n} plucks, focus on ${focus}`);
+}
+
+/* ---- 11c. space on a focused button must not do it twice ---- */
+{
+  await page.locator('.slot').nth(0).click();
+  await page.waitForTimeout(80);
+  await reset();
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(80);
+  const n = plucks(await log()).length;
+  check('space after clicking a chord slot strums once, not twice', n >= 3 && n <= 6, `${n} plucks`);
+}
 
 /* ---- 12. escape closes an open panel ---- */
 await page.click('#chordsBtn');
