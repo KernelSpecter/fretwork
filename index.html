@@ -376,6 +376,12 @@ class Guitar {
     this.meterTick = 0;
     this.levels = new Float32Array(6);
     this.post = null;
+    /* A strum is six plucks a few milliseconds apart. Posting them one at a
+       time from the main thread quantises every one to the start of a render
+       block, which smears the strum. Anything carrying a sample offset gets
+       queued here and fired exactly on time instead. */
+    this.queue = [];
+    this.now = 0;
 
     this.setInstrument({
       brightness: 0.55, decaySeconds: 5.5, combDepth: 0, combFrac: 0.12, fretNoise: 0.5,
@@ -414,6 +420,14 @@ class Guitar {
   }
 
   handle(msg) {
+    if (msg.d > 0) {
+      this.queue.push({ at: this.now + msg.d, msg });
+      return;
+    }
+    this.dispatch(msg);
+  }
+
+  dispatch(msg) {
     const S = this.strings;
     switch (msg.t) {
       case 'pluck': { const s = S[msg.s]; if (s) s.pluck(msg); break; }
@@ -435,13 +449,40 @@ class Guitar {
         this.bodyR.set(this.inst.modes, this.bodyMix);
         break;
       }
-      case 'silence': for (const s of S) s.silence(); break;
+      case 'silence': this.queue.length = 0; for (const s of S) s.silence(); break;
     }
   }
 
   render(L, R, n) {
+    let off = 0;
+    while (off < n) {
+      let idx = -1, best = Infinity;
+      for (let i = 0; i < this.queue.length; i++) {
+        if (this.queue[i].at < best) { best = this.queue[i].at; idx = i; }
+      }
+      if (idx >= 0 && best <= this.now + off) {
+        const q = this.queue[idx];
+        this.queue.splice(idx, 1);
+        this.dispatch(q.msg);
+        continue;
+      }
+      const end = idx >= 0 && best < this.now + n ? best - this.now : n;
+      this.span(L, R, off, end);
+      off = end;
+    }
+    this.now += n;
+
+    this.meterTick += n;
+    if (this.meterTick >= 1024) {
+      this.meterTick = 0;
+      for (let k = 0; k < 6; k++) this.levels[k] = this.strings[k].level;
+      if (this.post) this.post({ t: 'lv', v: Array.from(this.levels) });
+    }
+  }
+
+  span(L, R, from, to) {
     const S = this.strings;
-    for (let i = 0; i < n; i++) {
+    for (let i = from; i < to; i++) {
       const bus = this.bridgeLp.z;
       let sum = 0, sl = 0, sr = 0;
       for (let k = 0; k < 6; k++) {
@@ -464,13 +505,6 @@ class Guitar {
 
       L[i] = soft(this.bodyL.process(dl) * this.out);
       R[i] = soft(this.bodyR.process(dr) * this.out);
-    }
-
-    this.meterTick += n;
-    if (this.meterTick >= 1024) {
-      this.meterTick = 0;
-      for (let k = 0; k < 6; k++) this.levels[k] = S[k].level;
-      if (this.post) this.post({ t: 'lv', v: Array.from(this.levels) });
     }
   }
 }

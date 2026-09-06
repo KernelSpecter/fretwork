@@ -399,6 +399,33 @@ const fret = (open, f) => open * Math.pow(2, f / 12);
   }
 }
 
+/* ---------- 12. scheduled plucks land on the right sample ---------- */
+{
+  const g = new E.Guitar(RATE);
+  /* one strum, six strings, 9 ms apart, all posted in the same block */
+  const offsets = [0, 432, 864, 1296, 1728, 2160];
+  const g2 = new E.Guitar(RATE);
+  const msgs = offsets.map((d, s) => ({ at: 0, msg: { t: 'pluck', s, vel: 0.9, pos: 0.15, d } }));
+  const { L } = render(g2, 1.5, msgs);
+
+  /* find where each string actually starts moving by watching its envelope */
+  const onset = [];
+  const g3 = new E.Guitar(RATE);
+  for (let s = 0; s < 6; s++) {
+    const solo = new E.Guitar(RATE);
+    const out = render(solo, 0.2, [{ at: 0, msg: { t: 'pluck', s, vel: 0.9, pos: 0.15, d: offsets[s] } }]).L;
+    let i = 0;
+    while (i < out.length && Math.abs(out[i]) < 1e-4) i++;
+    onset.push(i);
+  }
+  const err = onset.map((o, i) => Math.abs(o - offsets[i]));
+  const worst = Math.max(...err);
+  check('a scheduled pluck fires within a couple of samples of its offset',
+    worst <= 4 && !hasBadSamples(L),
+    `worst offset error ${worst} samples across a six string strum`);
+  void g; void g3;
+}
+
 /* ---------- optional: render something to listen to ---------- */
 if (process.argv.includes('--wav')) {
   const g = new E.Guitar(RATE);
