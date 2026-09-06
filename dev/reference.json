@@ -1,0 +1,3179 @@
+{
+  "tunings": [
+    {
+      "name": "Standard",
+      "notes": [
+        "E2",
+        "A2",
+        "D3",
+        "G3",
+        "B3",
+        "E4"
+      ],
+      "freqs": [
+        82.407,
+        110.0,
+        146.832,
+        195.998,
+        246.942,
+        329.628
+      ],
+      "note": "The universal reference tuning that every fret and interval convention on the instrument assumes."
+    },
+    {
+      "name": "Drop D",
+      "notes": [
+        "D2",
+        "A2",
+        "D3",
+        "G3",
+        "B3",
+        "E4"
+      ],
+      "freqs": [
+        73.416,
+        110.0,
+        146.832,
+        195.998,
+        246.942,
+        329.628
+      ],
+      "note": "Low E dropped a whole step to D so a single-finger fifth-fret barre on the bottom two strings gives a power chord; a rock and metal staple."
+    },
+    {
+      "name": "DADGAD",
+      "notes": [
+        "D2",
+        "A2",
+        "D3",
+        "G3",
+        "A3",
+        "D4"
+      ],
+      "freqs": [
+        73.416,
+        110.0,
+        146.832,
+        195.998,
+        220.0,
+        293.665
+      ],
+      "note": "Modal Celtic and folk tuning built from stacked fourths and fifths around a D drone; open strings ring as Dsus4."
+    },
+    {
+      "name": "Open G",
+      "notes": [
+        "D2",
+        "G2",
+        "D3",
+        "G3",
+        "B3",
+        "D4"
+      ],
+      "freqs": [
+        73.416,
+        97.999,
+        146.832,
+        195.998,
+        246.942,
+        293.665
+      ],
+      "note": "Open strings sound a G major triad; classic slide-guitar and five-string open-tuned rock style."
+    },
+    {
+      "name": "Open D",
+      "notes": [
+        "D2",
+        "A2",
+        "D3",
+        "F#3",
+        "A3",
+        "D4"
+      ],
+      "freqs": [
+        73.416,
+        110.0,
+        146.832,
+        184.997,
+        220.0,
+        293.665
+      ],
+      "note": "Open strings sound a D major triad; a slide and fingerstyle blues and folk staple, a whole step below Open E."
+    },
+    {
+      "name": "Open E",
+      "notes": [
+        "E2",
+        "B2",
+        "E3",
+        "G#3",
+        "B3",
+        "E4"
+      ],
+      "freqs": [
+        82.407,
+        123.471,
+        164.814,
+        207.652,
+        246.942,
+        329.628
+      ],
+      "note": "Open strings sound an E major triad; bright, high-tension slide tuning common in blues."
+    },
+    {
+      "name": "Eb (half step down)",
+      "notes": [
+        "Eb2",
+        "Ab2",
+        "Db3",
+        "Gb3",
+        "Bb3",
+        "Eb4"
+      ],
+      "freqs": [
+        77.782,
+        103.826,
+        138.591,
+        184.997,
+        233.082,
+        311.127
+      ],
+      "note": "Standard tuning lowered a half step; eases string tension and lowers vocal keys without changing fingerings."
+    },
+    {
+      "name": "D (whole step down)",
+      "notes": [
+        "D2",
+        "G2",
+        "C3",
+        "F3",
+        "A3",
+        "D4"
+      ],
+      "freqs": [
+        73.416,
+        97.999,
+        130.813,
+        174.614,
+        220.0,
+        293.665
+      ],
+      "note": "Standard tuning lowered a full step; looser feel and darker tone while keeping standard fingerings."
+    },
+    {
+      "name": "Double Drop D",
+      "notes": [
+        "D2",
+        "A2",
+        "D3",
+        "G3",
+        "B3",
+        "D4"
+      ],
+      "freqs": [
+        73.416,
+        110.0,
+        146.832,
+        195.998,
+        246.942,
+        293.665
+      ],
+      "note": "Drop D with the high E also dropped to D, framing chords with a D octave on both outer strings; a fingerstyle favorite."
+    }
+  ],
+  "instruments": [
+    {
+      "id": "steel",
+      "displayName": "Steel-String Dreadnought",
+      "scaleLengthMm": 645.16,
+      "bodyModes": [
+        {
+          "name": "Helmholtz air resonance (A0)",
+          "freqHz": 100.0,
+          "q": 20,
+          "gainDb": 6.0
+        },
+        {
+          "name": "Main top (0,0) mode (T1)",
+          "freqHz": 200.0,
+          "q": 25,
+          "gainDb": 8.0
+        },
+        {
+          "name": "Main back (0,0) mode",
+          "freqHz": 220.0,
+          "q": 22,
+          "gainDb": 4.5
+        },
+        {
+          "name": "Cross-dipole top mode (1,1)",
+          "freqHz": 400.0,
+          "q": 15,
+          "gainDb": 3.5
+        },
+        {
+          "name": "Higher top mode (2,1)",
+          "freqHz": 550.0,
+          "q": 12,
+          "gainDb": 2.5
+        }
+      ],
+      "stringGauges": [
+        0.053,
+        0.042,
+        0.032,
+        0.024,
+        0.016,
+        0.012
+      ],
+      "woundStrings": 4,
+      "pickupPositionsFraction": [],
+      "brightness": 0.55,
+      "decaySeconds": 4.5,
+      "sources": [
+        "https://logosfoundation.org/kursus/The%20Science%20of%20String%20Instruments.pdf",
+        "https://www.daddario.com/products/ej16-phosphor-bronze-acoustic-guitar-strings-light-12-53"
+      ]
+    },
+    {
+      "id": "nylon",
+      "displayName": "Classical Nylon-String",
+      "scaleLengthMm": 650.0,
+      "bodyModes": [
+        {
+          "name": "Helmholtz air resonance (A0)",
+          "freqHz": 97.0,
+          "q": 11,
+          "gainDb": 5.0
+        },
+        {
+          "name": "Main top (0,0) mode",
+          "freqHz": 200.0,
+          "q": 18,
+          "gainDb": 7.0
+        },
+        {
+          "name": "Main back (0,0) mode",
+          "freqHz": 214.0,
+          "q": 16,
+          "gainDb": 3.5
+        },
+        {
+          "name": "Cross-dipole top mode (1,1)",
+          "freqHz": 390.0,
+          "q": 13,
+          "gainDb": 3.0
+        }
+      ],
+      "stringGauges": [
+        0.043,
+        0.035,
+        0.029,
+        0.0403,
+        0.0322,
+        0.028
+      ],
+      "woundStrings": 3,
+      "pickupPositionsFraction": [],
+      "brightness": 0.35,
+      "decaySeconds": 3.0,
+      "sources": [
+        "https://euphonics.org/4-2-2-coupling-of-a-helmholtz-resonator-and-a-body-mode/",
+        "https://www.daddario.com/products/guitar/classical-guitar/pro-arte-nylon/ej45-pro-arte-nylon-normal-tension/"
+      ]
+    },
+    {
+      "id": "electric",
+      "displayName": "Solidbody Electric",
+      "scaleLengthMm": 647.7,
+      "bodyModes": [
+        {
+          "name": "Neck/body flexural mode (very weak: a solid slab has almost no acoustic cavity to resonate)",
+          "freqHz": 420.0,
+          "q": 8,
+          "gainDb": 0.8
+        },
+        {
+          "name": "Higher flexural mode (very weak)",
+          "freqHz": 950.0,
+          "q": 8,
+          "gainDb": 0.4
+        }
+      ],
+      "stringGauges": [
+        0.046,
+        0.036,
+        0.026,
+        0.017,
+        0.013,
+        0.01
+      ],
+      "woundStrings": 3,
+      "pickupPositionsFraction": [
+        {
+          "name": "bridge",
+          "fraction": 0.0637
+        },
+        {
+          "name": "middle",
+          "fraction": 0.152
+        },
+        {
+          "name": "neck",
+          "fraction": 0.25
+        }
+      ],
+      "brightness": 0.6,
+      "decaySeconds": 6.0,
+      "sources": [
+        "https://till.com/articles/PickupResponse/",
+        "https://www.daddario.com/products/exl110-xl-nickel-wound-electric-guitar-strings-regular-light-10-46",
+        "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8465587/"
+      ]
+    },
+    {
+      "id": "archtop",
+      "displayName": "Archtop Jazz Guitar",
+      "scaleLengthMm": 628.65,
+      "bodyModes": [
+        {
+          "name": "Helmholtz air resonance (A0, f-holes)",
+          "freqHz": 110.0,
+          "q": 14,
+          "gainDb": 5.0
+        },
+        {
+          "name": "Main arched-top (0,0) mode",
+          "freqHz": 260.0,
+          "q": 20,
+          "gainDb": 6.5
+        },
+        {
+          "name": "Main back (0,0) mode",
+          "freqHz": 290.0,
+          "q": 18,
+          "gainDb": 3.0
+        },
+        {
+          "name": "Higher top mode",
+          "freqHz": 480.0,
+          "q": 14,
+          "gainDb": 2.0
+        }
+      ],
+      "stringGauges": [
+        0.05,
+        0.04,
+        0.03,
+        0.022,
+        0.015,
+        0.011
+      ],
+      "woundStrings": 4,
+      "pickupPositionsFraction": [],
+      "brightness": 0.4,
+      "decaySeconds": 3.5,
+      "sources": [
+        "https://www.mimf.com/phpbb/viewtopic.php?t=1956",
+        "https://www.daddario.com/products/guitar/electric-guitar/xl-chromes/ecg24-chromes-flat-wound-jazz-light-11-50/"
+      ]
+    }
+  ],
+  "chordShapes": [
+    {
+      "name": "C",
+      "root": "C",
+      "quality": "major",
+      "frets": [
+        -1,
+        3,
+        2,
+        0,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        3,
+        2,
+        0,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "A",
+      "root": "A",
+      "quality": "major",
+      "frets": [
+        -1,
+        0,
+        2,
+        2,
+        2,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        1,
+        2,
+        3,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "G",
+      "root": "G",
+      "quality": "major",
+      "frets": [
+        3,
+        2,
+        0,
+        0,
+        0,
+        3
+      ],
+      "fingers": [
+        2,
+        1,
+        0,
+        0,
+        0,
+        3
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "E",
+      "root": "E",
+      "quality": "major",
+      "frets": [
+        0,
+        2,
+        2,
+        1,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        2,
+        3,
+        1,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "D",
+      "root": "D",
+      "quality": "major",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        3,
+        2
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        1,
+        3,
+        2
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Am",
+      "root": "A",
+      "quality": "minor",
+      "frets": [
+        -1,
+        0,
+        2,
+        2,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        2,
+        3,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Em",
+      "root": "E",
+      "quality": "minor",
+      "frets": [
+        0,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        2,
+        3,
+        0,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Dm",
+      "root": "D",
+      "quality": "minor",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        3,
+        1
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        2,
+        3,
+        1
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "F",
+      "root": "F",
+      "quality": "major",
+      "frets": [
+        1,
+        3,
+        3,
+        2,
+        1,
+        1
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 1,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "C7",
+      "root": "C",
+      "quality": "7",
+      "frets": [
+        -1,
+        3,
+        2,
+        3,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        3,
+        2,
+        4,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "A7",
+      "root": "A",
+      "quality": "7",
+      "frets": [
+        -1,
+        0,
+        2,
+        0,
+        2,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        2,
+        0,
+        3,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "G7",
+      "root": "G",
+      "quality": "7",
+      "frets": [
+        3,
+        2,
+        0,
+        0,
+        0,
+        1
+      ],
+      "fingers": [
+        3,
+        2,
+        0,
+        0,
+        0,
+        1
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "D7",
+      "root": "D",
+      "quality": "7",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        1,
+        2
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        2,
+        1,
+        3
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "E7",
+      "root": "E",
+      "quality": "7",
+      "frets": [
+        0,
+        2,
+        0,
+        1,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        2,
+        0,
+        1,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "B7",
+      "root": "B",
+      "quality": "7",
+      "frets": [
+        -1,
+        2,
+        1,
+        2,
+        0,
+        2
+      ],
+      "fingers": [
+        0,
+        2,
+        1,
+        3,
+        0,
+        4
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Cmaj7",
+      "root": "C",
+      "quality": "maj7",
+      "frets": [
+        -1,
+        3,
+        2,
+        0,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        3,
+        2,
+        0,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Dmaj7",
+      "root": "D",
+      "quality": "maj7",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        2,
+        2
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        1,
+        2,
+        3
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Fmaj7",
+      "root": "F",
+      "quality": "maj7",
+      "frets": [
+        -1,
+        -1,
+        3,
+        2,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        3,
+        2,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Am7",
+      "root": "A",
+      "quality": "m7",
+      "frets": [
+        -1,
+        0,
+        2,
+        0,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        2,
+        0,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Em7",
+      "root": "E",
+      "quality": "m7",
+      "frets": [
+        0,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Dm7",
+      "root": "D",
+      "quality": "m7",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        1,
+        1
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        2,
+        1,
+        1
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Asus2",
+      "root": "A",
+      "quality": "sus2",
+      "frets": [
+        -1,
+        0,
+        2,
+        2,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        1,
+        2,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Dsus2",
+      "root": "D",
+      "quality": "sus2",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        3,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        1,
+        2,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Esus2",
+      "root": "E",
+      "quality": "sus2",
+      "frets": [
+        0,
+        2,
+        4,
+        4,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        0,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Asus4",
+      "root": "A",
+      "quality": "sus4",
+      "frets": [
+        -1,
+        0,
+        2,
+        2,
+        3,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        1,
+        2,
+        3,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Dsus4",
+      "root": "D",
+      "quality": "sus4",
+      "frets": [
+        -1,
+        -1,
+        0,
+        2,
+        3,
+        3
+      ],
+      "fingers": [
+        0,
+        0,
+        0,
+        1,
+        2,
+        3
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Esus4",
+      "root": "E",
+      "quality": "sus4",
+      "frets": [
+        0,
+        2,
+        2,
+        2,
+        0,
+        0
+      ],
+      "fingers": [
+        0,
+        1,
+        1,
+        1,
+        0,
+        0
+      ],
+      "barre": 2,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Csus4",
+      "root": "C",
+      "quality": "sus4",
+      "frets": [
+        -1,
+        3,
+        3,
+        0,
+        1,
+        1
+      ],
+      "fingers": [
+        0,
+        3,
+        4,
+        0,
+        1,
+        1
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Cadd9",
+      "root": "C",
+      "quality": "add9",
+      "frets": [
+        -1,
+        3,
+        2,
+        0,
+        3,
+        0
+      ],
+      "fingers": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Gadd9",
+      "root": "G",
+      "quality": "add9",
+      "frets": [
+        3,
+        2,
+        0,
+        2,
+        0,
+        3
+      ],
+      "fingers": [
+        2,
+        1,
+        0,
+        3,
+        0,
+        4
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Aadd9",
+      "root": "A",
+      "quality": "add9",
+      "frets": [
+        -1,
+        0,
+        2,
+        4,
+        2,
+        0
+      ],
+      "fingers": [
+        0,
+        0,
+        1,
+        3,
+        2,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "G/B",
+      "root": "G",
+      "quality": "major",
+      "frets": [
+        -1,
+        2,
+        0,
+        0,
+        0,
+        3
+      ],
+      "fingers": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        3
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "D/F#",
+      "root": "D",
+      "quality": "major",
+      "frets": [
+        2,
+        -1,
+        0,
+        2,
+        3,
+        2
+      ],
+      "fingers": [
+        1,
+        0,
+        0,
+        2,
+        4,
+        3
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "C/G",
+      "root": "C",
+      "quality": "major",
+      "frets": [
+        3,
+        3,
+        2,
+        0,
+        1,
+        0
+      ],
+      "fingers": [
+        3,
+        4,
+        2,
+        0,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Am/G",
+      "root": "A",
+      "quality": "minor",
+      "frets": [
+        3,
+        0,
+        2,
+        2,
+        1,
+        0
+      ],
+      "fingers": [
+        4,
+        0,
+        2,
+        3,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Am7b5",
+      "root": "A",
+      "quality": "m7b5",
+      "frets": [
+        -1,
+        0,
+        1,
+        0,
+        1,
+        -1
+      ],
+      "fingers": [
+        0,
+        0,
+        1,
+        0,
+        2,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Bdim7",
+      "root": "B",
+      "quality": "dim7",
+      "frets": [
+        -1,
+        2,
+        3,
+        1,
+        3,
+        -1
+      ],
+      "fingers": [
+        0,
+        2,
+        4,
+        1,
+        3,
+        0
+      ],
+      "barre": 0,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "C9",
+      "root": "C",
+      "quality": "9",
+      "frets": [
+        -1,
+        3,
+        2,
+        3,
+        3,
+        -1
+      ],
+      "fingers": [
+        0,
+        2,
+        1,
+        3,
+        4,
+        0
+      ],
+      "barre": 0,
+      "openPosition": false,
+      "movable": false
+    },
+    {
+      "name": "G13",
+      "root": "G",
+      "quality": "13",
+      "frets": [
+        3,
+        -1,
+        2,
+        0,
+        0,
+        1
+      ],
+      "fingers": [
+        3,
+        0,
+        2,
+        0,
+        0,
+        1
+      ],
+      "barre": 0,
+      "openPosition": false,
+      "movable": false
+    },
+    {
+      "name": "C6",
+      "root": "C",
+      "quality": "6",
+      "frets": [
+        -1,
+        3,
+        2,
+        2,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        3,
+        2,
+        4,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Am6",
+      "root": "A",
+      "quality": "m6",
+      "frets": [
+        -1,
+        0,
+        2,
+        2,
+        1,
+        2
+      ],
+      "fingers": [
+        0,
+        0,
+        2,
+        3,
+        1,
+        4
+      ],
+      "barre": 0,
+      "openPosition": true,
+      "movable": false
+    },
+    {
+      "name": "Caug",
+      "root": "C",
+      "quality": "aug",
+      "frets": [
+        -1,
+        3,
+        2,
+        1,
+        1,
+        0
+      ],
+      "fingers": [
+        0,
+        3,
+        2,
+        1,
+        1,
+        0
+      ],
+      "barre": 0,
+      "openPosition": false,
+      "movable": false
+    },
+    {
+      "name": "A (G shape movable)",
+      "root": "A",
+      "quality": "major",
+      "frets": [
+        5,
+        4,
+        2,
+        2,
+        2,
+        5
+      ],
+      "fingers": [
+        3,
+        2,
+        1,
+        1,
+        1,
+        4
+      ],
+      "barre": 2,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "E (D shape movable)",
+      "root": "E",
+      "quality": "major",
+      "frets": [
+        -1,
+        -1,
+        2,
+        4,
+        5,
+        4
+      ],
+      "fingers": [
+        0,
+        0,
+        1,
+        2,
+        4,
+        3
+      ],
+      "barre": 0,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "D (C shape movable)",
+      "root": "D",
+      "quality": "major",
+      "frets": [
+        -1,
+        5,
+        4,
+        2,
+        3,
+        -1
+      ],
+      "fingers": [
+        0,
+        4,
+        3,
+        1,
+        2,
+        0
+      ],
+      "barre": 0,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "F#",
+      "root": "F#",
+      "quality": "major",
+      "frets": [
+        2,
+        4,
+        4,
+        3,
+        2,
+        2
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 2,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "G (E shape)",
+      "root": "G",
+      "quality": "major",
+      "frets": [
+        3,
+        5,
+        5,
+        4,
+        3,
+        3
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Ab",
+      "root": "Ab",
+      "quality": "major",
+      "frets": [
+        4,
+        6,
+        6,
+        5,
+        4,
+        4
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 4,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "A (E shape)",
+      "root": "A",
+      "quality": "major",
+      "frets": [
+        5,
+        7,
+        7,
+        6,
+        5,
+        5
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bb",
+      "root": "Bb",
+      "quality": "major",
+      "frets": [
+        6,
+        8,
+        8,
+        7,
+        6,
+        6
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 6,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "B",
+      "root": "B",
+      "quality": "major",
+      "frets": [
+        7,
+        9,
+        9,
+        8,
+        7,
+        7
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 7,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "C (E shape)",
+      "root": "C",
+      "quality": "major",
+      "frets": [
+        8,
+        10,
+        10,
+        9,
+        8,
+        8
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        2,
+        1,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Fm",
+      "root": "F",
+      "quality": "minor",
+      "frets": [
+        1,
+        3,
+        3,
+        1,
+        1,
+        1
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 1,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "F#m",
+      "root": "F#",
+      "quality": "minor",
+      "frets": [
+        2,
+        4,
+        4,
+        2,
+        2,
+        2
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 2,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Gm",
+      "root": "G",
+      "quality": "minor",
+      "frets": [
+        3,
+        5,
+        5,
+        3,
+        3,
+        3
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Am (E shape)",
+      "root": "A",
+      "quality": "minor",
+      "frets": [
+        5,
+        7,
+        7,
+        5,
+        5,
+        5
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bbm",
+      "root": "Bb",
+      "quality": "minor",
+      "frets": [
+        6,
+        8,
+        8,
+        6,
+        6,
+        6
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 6,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bm",
+      "root": "B",
+      "quality": "minor",
+      "frets": [
+        7,
+        9,
+        9,
+        7,
+        7,
+        7
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 7,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Cm",
+      "root": "C",
+      "quality": "minor",
+      "frets": [
+        8,
+        10,
+        10,
+        8,
+        8,
+        8
+      ],
+      "fingers": [
+        1,
+        3,
+        4,
+        1,
+        1,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "F7",
+      "root": "F",
+      "quality": "7",
+      "frets": [
+        1,
+        3,
+        1,
+        2,
+        1,
+        1
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        2,
+        1,
+        1
+      ],
+      "barre": 1,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "G7 (E shape)",
+      "root": "G",
+      "quality": "7",
+      "frets": [
+        3,
+        5,
+        3,
+        4,
+        3,
+        3
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        2,
+        1,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "A7 (E shape)",
+      "root": "A",
+      "quality": "7",
+      "frets": [
+        5,
+        7,
+        5,
+        6,
+        5,
+        5
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        2,
+        1,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bb7",
+      "root": "Bb",
+      "quality": "7",
+      "frets": [
+        6,
+        8,
+        6,
+        7,
+        6,
+        6
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        2,
+        1,
+        1
+      ],
+      "barre": 6,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "C7 (E shape)",
+      "root": "C",
+      "quality": "7",
+      "frets": [
+        8,
+        10,
+        8,
+        9,
+        8,
+        8
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        2,
+        1,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "F#m7",
+      "root": "F#",
+      "quality": "m7",
+      "frets": [
+        2,
+        4,
+        2,
+        2,
+        2,
+        2
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        1,
+        1,
+        1
+      ],
+      "barre": 2,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Gm7",
+      "root": "G",
+      "quality": "m7",
+      "frets": [
+        3,
+        5,
+        3,
+        3,
+        3,
+        3
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        1,
+        1,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Am7 (E shape)",
+      "root": "A",
+      "quality": "m7",
+      "frets": [
+        5,
+        7,
+        5,
+        5,
+        5,
+        5
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        1,
+        1,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bm7",
+      "root": "B",
+      "quality": "m7",
+      "frets": [
+        7,
+        9,
+        7,
+        7,
+        7,
+        7
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        1,
+        1,
+        1
+      ],
+      "barre": 7,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Cm7",
+      "root": "C",
+      "quality": "m7",
+      "frets": [
+        8,
+        10,
+        8,
+        8,
+        8,
+        8
+      ],
+      "fingers": [
+        1,
+        3,
+        1,
+        1,
+        1,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Fmaj7 (E shape)",
+      "root": "F",
+      "quality": "maj7",
+      "frets": [
+        1,
+        3,
+        2,
+        2,
+        1,
+        1
+      ],
+      "fingers": [
+        1,
+        3,
+        2,
+        2,
+        1,
+        1
+      ],
+      "barre": 1,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Gmaj7",
+      "root": "G",
+      "quality": "maj7",
+      "frets": [
+        3,
+        5,
+        4,
+        4,
+        3,
+        3
+      ],
+      "fingers": [
+        1,
+        3,
+        2,
+        2,
+        1,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Amaj7",
+      "root": "A",
+      "quality": "maj7",
+      "frets": [
+        5,
+        7,
+        6,
+        6,
+        5,
+        5
+      ],
+      "fingers": [
+        1,
+        3,
+        2,
+        2,
+        1,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Cmaj7 (E shape)",
+      "root": "C",
+      "quality": "maj7",
+      "frets": [
+        8,
+        10,
+        9,
+        9,
+        8,
+        8
+      ],
+      "fingers": [
+        1,
+        3,
+        2,
+        2,
+        1,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bb (A shape)",
+      "root": "Bb",
+      "quality": "major",
+      "frets": [
+        -1,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 1,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "C (A shape)",
+      "root": "C",
+      "quality": "major",
+      "frets": [
+        -1,
+        3,
+        5,
+        5,
+        5,
+        3
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Db",
+      "root": "Db",
+      "quality": "major",
+      "frets": [
+        -1,
+        4,
+        6,
+        6,
+        6,
+        4
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 4,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "D (A shape)",
+      "root": "D",
+      "quality": "major",
+      "frets": [
+        -1,
+        5,
+        7,
+        7,
+        7,
+        5
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Eb",
+      "root": "Eb",
+      "quality": "major",
+      "frets": [
+        -1,
+        6,
+        8,
+        8,
+        8,
+        6
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 6,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "E (A shape)",
+      "root": "E",
+      "quality": "major",
+      "frets": [
+        -1,
+        7,
+        9,
+        9,
+        9,
+        7
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 7,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "F (A shape)",
+      "root": "F",
+      "quality": "major",
+      "frets": [
+        -1,
+        8,
+        10,
+        10,
+        10,
+        8
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "G (A shape)",
+      "root": "G",
+      "quality": "major",
+      "frets": [
+        -1,
+        10,
+        12,
+        12,
+        12,
+        10
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        3,
+        3,
+        1
+      ],
+      "barre": 10,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bbm (A shape)",
+      "root": "Bb",
+      "quality": "minor",
+      "frets": [
+        -1,
+        1,
+        3,
+        3,
+        2,
+        1
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 1,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Cm (A shape)",
+      "root": "C",
+      "quality": "minor",
+      "frets": [
+        -1,
+        3,
+        5,
+        5,
+        4,
+        3
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Dm (A shape)",
+      "root": "D",
+      "quality": "minor",
+      "frets": [
+        -1,
+        5,
+        7,
+        7,
+        6,
+        5
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Ebm",
+      "root": "Eb",
+      "quality": "minor",
+      "frets": [
+        -1,
+        6,
+        8,
+        8,
+        7,
+        6
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 6,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Em (A shape)",
+      "root": "E",
+      "quality": "minor",
+      "frets": [
+        -1,
+        7,
+        9,
+        9,
+        8,
+        7
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 7,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Fm (A shape)",
+      "root": "F",
+      "quality": "minor",
+      "frets": [
+        -1,
+        8,
+        10,
+        10,
+        9,
+        8
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Gm (A shape)",
+      "root": "G",
+      "quality": "minor",
+      "frets": [
+        -1,
+        10,
+        12,
+        12,
+        11,
+        10
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        4,
+        2,
+        1
+      ],
+      "barre": 10,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Bb7 (A shape)",
+      "root": "Bb",
+      "quality": "7",
+      "frets": [
+        -1,
+        1,
+        3,
+        1,
+        3,
+        1
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        4,
+        1
+      ],
+      "barre": 1,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "C7 (A shape)",
+      "root": "C",
+      "quality": "7",
+      "frets": [
+        -1,
+        3,
+        5,
+        3,
+        5,
+        3
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        4,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "D7 (A shape)",
+      "root": "D",
+      "quality": "7",
+      "frets": [
+        -1,
+        5,
+        7,
+        5,
+        7,
+        5
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        4,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "F7 (A shape)",
+      "root": "F",
+      "quality": "7",
+      "frets": [
+        -1,
+        8,
+        10,
+        8,
+        10,
+        8
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        4,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Cm7 (A shape)",
+      "root": "C",
+      "quality": "m7",
+      "frets": [
+        -1,
+        3,
+        5,
+        3,
+        4,
+        3
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        2,
+        1
+      ],
+      "barre": 3,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Dm7 (A shape)",
+      "root": "D",
+      "quality": "m7",
+      "frets": [
+        -1,
+        5,
+        7,
+        5,
+        6,
+        5
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        2,
+        1
+      ],
+      "barre": 5,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Fm7",
+      "root": "F",
+      "quality": "m7",
+      "frets": [
+        -1,
+        8,
+        10,
+        8,
+        9,
+        8
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        2,
+        1
+      ],
+      "barre": 8,
+      "openPosition": false,
+      "movable": true
+    },
+    {
+      "name": "Gm7 (A shape)",
+      "root": "G",
+      "quality": "m7",
+      "frets": [
+        -1,
+        10,
+        12,
+        10,
+        11,
+        10
+      ],
+      "fingers": [
+        0,
+        1,
+        3,
+        1,
+        2,
+        1
+      ],
+      "barre": 10,
+      "openPosition": false,
+      "movable": true
+    }
+  ],
+  "strumPatterns": [
+    {
+      "name": "Folk down-up",
+      "slots": [
+        "D",
+        "-",
+        "D",
+        "U",
+        "-",
+        "U",
+        "D",
+        "U"
+      ],
+      "accents": [
+        1,
+        0,
+        0.6,
+        0.5,
+        0,
+        0.5,
+        0.7,
+        0.5
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Pop D DU UDU",
+      "slots": [
+        "D",
+        "-",
+        "D",
+        "U",
+        "U",
+        "D",
+        "U",
+        "-"
+      ],
+      "accents": [
+        1,
+        0,
+        0.7,
+        0.5,
+        0.6,
+        0.9,
+        0.6,
+        0
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Basic rock quarters",
+      "slots": [
+        "D",
+        "-",
+        "D",
+        "-",
+        "D",
+        "-",
+        "D",
+        "-"
+      ],
+      "accents": [
+        1,
+        0,
+        0.8,
+        0,
+        0.9,
+        0,
+        0.8,
+        0
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Driving rock eighths",
+      "slots": [
+        "D",
+        "U",
+        "D",
+        "U",
+        "D",
+        "U",
+        "D",
+        "U"
+      ],
+      "accents": [
+        1,
+        0.6,
+        0.8,
+        0.6,
+        0.9,
+        0.6,
+        0.8,
+        0.6
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Reggae skank",
+      "slots": [
+        "-",
+        "U",
+        "-",
+        "U",
+        "-",
+        "U",
+        "-",
+        "U"
+      ],
+      "accents": [
+        0,
+        1,
+        0,
+        0.7,
+        0,
+        1,
+        0,
+        0.7
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Bossa nova flavored",
+      "slots": [
+        "D",
+        "-",
+        "U",
+        "D",
+        "-",
+        "U",
+        "D",
+        "-"
+      ],
+      "accents": [
+        0.9,
+        0,
+        0.4,
+        0.7,
+        0,
+        0.4,
+        0.8,
+        0
+      ],
+      "feel": "swung"
+    },
+    {
+      "name": "Muted chuck rock",
+      "slots": [
+        "D",
+        "X",
+        "D",
+        "U",
+        "X",
+        "U",
+        "D",
+        "X"
+      ],
+      "accents": [
+        1,
+        0.6,
+        0.7,
+        0.5,
+        0.6,
+        0.5,
+        0.8,
+        0.5
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Ballad swells",
+      "slots": [
+        "D",
+        "-",
+        "-",
+        "U",
+        "D",
+        "-",
+        "-",
+        "U"
+      ],
+      "accents": [
+        1,
+        0,
+        0,
+        0.4,
+        0.7,
+        0,
+        0,
+        0.4
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Fingerstyle travis-feel comp",
+      "slots": [
+        "D",
+        "U",
+        "-",
+        "U",
+        "D",
+        "U",
+        "-",
+        "U"
+      ],
+      "accents": [
+        0.8,
+        0.3,
+        0,
+        0.4,
+        0.6,
+        0.3,
+        0,
+        0.4
+      ],
+      "feel": "swung"
+    },
+    {
+      "name": "Fingerstyle arpeggiated pulse",
+      "slots": [
+        "D",
+        "-",
+        "U",
+        "-",
+        "D",
+        "-",
+        "U",
+        "-"
+      ],
+      "accents": [
+        0.7,
+        0,
+        0.35,
+        0,
+        0.6,
+        0,
+        0.35,
+        0
+      ],
+      "feel": "straight"
+    },
+    {
+      "name": "Swung shuffle blues",
+      "slots": [
+        "D",
+        "-",
+        "U",
+        "D",
+        "-",
+        "U",
+        "D",
+        "U"
+      ],
+      "accents": [
+        1,
+        0,
+        0.5,
+        0.8,
+        0,
+        0.5,
+        0.9,
+        0.5
+      ],
+      "feel": "swung"
+    }
+  ],
+  "progressions": [
+    {
+      "name": "I V vi IV in G",
+      "chords": [
+        "G",
+        "D",
+        "Em",
+        "C"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Pop D DU UDU"
+    },
+    {
+      "name": "I IV V in E",
+      "chords": [
+        "E",
+        "A",
+        "B7"
+      ],
+      "barsPerChord": 2,
+      "suggestedPattern": "Driving rock eighths"
+    },
+    {
+      "name": "12 bar blues in A",
+      "chords": [
+        "A7",
+        "A7",
+        "A7",
+        "A7",
+        "D7",
+        "D7",
+        "A7",
+        "A7",
+        "E7",
+        "D7",
+        "A7",
+        "E7"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Swung shuffle blues"
+    },
+    {
+      "name": "Andalusian cadence in Am",
+      "chords": [
+        "Am",
+        "G",
+        "F",
+        "E"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Fingerstyle arpeggiated pulse"
+    },
+    {
+      "name": "ii V I in C",
+      "chords": [
+        "Dm7",
+        "G7",
+        "Cmaj7"
+      ],
+      "barsPerChord": 2,
+      "suggestedPattern": "Bossa nova flavored"
+    },
+    {
+      "name": "vi IV I V in C",
+      "chords": [
+        "Am",
+        "F",
+        "C",
+        "G"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Folk down-up"
+    },
+    {
+      "name": "I V vi iii IV in D",
+      "chords": [
+        "D",
+        "A",
+        "Bm",
+        "F#m",
+        "G"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Folk down-up"
+    },
+    {
+      "name": "Descending folk turnaround in Am",
+      "chords": [
+        "Am",
+        "G",
+        "F",
+        "E7"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Fingerstyle travis-feel comp"
+    },
+    {
+      "name": "I IV I V in D",
+      "chords": [
+        "D",
+        "G",
+        "D",
+        "A"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Basic rock quarters"
+    },
+    {
+      "name": "Reggae one drop in G",
+      "chords": [
+        "G",
+        "Em",
+        "C",
+        "D"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Reggae skank"
+    },
+    {
+      "name": "Slash-chord walk-down in C",
+      "chords": [
+        "C",
+        "G/B",
+        "Am",
+        "C/G",
+        "F"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Fingerstyle arpeggiated pulse"
+    },
+    {
+      "name": "12 bar blues in E",
+      "chords": [
+        "E",
+        "E",
+        "E",
+        "E",
+        "A",
+        "A",
+        "E",
+        "E",
+        "B7",
+        "A",
+        "E",
+        "B7"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Swung shuffle blues"
+    },
+    {
+      "name": "Jazz turnaround I vi ii V in C",
+      "chords": [
+        "Cmaj7",
+        "Am7",
+        "Dm7",
+        "G7"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Bossa nova flavored"
+    },
+    {
+      "name": "Minor ii V i in Am",
+      "chords": [
+        "Bdim7",
+        "E7",
+        "Am"
+      ],
+      "barsPerChord": 2,
+      "suggestedPattern": "Ballad swells"
+    },
+    {
+      "name": "I IV V I in A",
+      "chords": [
+        "A",
+        "D",
+        "E",
+        "A"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Driving rock eighths"
+    },
+    {
+      "name": "Suspended folk vamp in D",
+      "chords": [
+        "D",
+        "Dsus4",
+        "D",
+        "Dsus2"
+      ],
+      "barsPerChord": 1,
+      "suggestedPattern": "Fingerstyle arpeggiated pulse"
+    }
+  ],
+  "pluckPositions": [
+    {
+      "name": "Bridge",
+      "fraction": 0.05,
+      "character": "Glassy, thin, and metallic with strong high harmonics and almost no fundamental warmth."
+    },
+    {
+      "name": "Ponticello",
+      "fraction": 0.09,
+      "character": "Nasal and bright, the classical-guitar sul ponticello color, rich in upper partials."
+    },
+    {
+      "name": "Normal",
+      "fraction": 0.18,
+      "character": "Balanced, all-purpose tone used for most everyday playing."
+    },
+    {
+      "name": "Sweet spot",
+      "fraction": 0.22,
+      "character": "Warm and full with the fundamental and low harmonics emphasized; the default position most players settle into."
+    },
+    {
+      "name": "Over the soundhole",
+      "fraction": 0.25,
+      "character": "Round, woody, bassy tone typical of strumming over an acoustic soundhole."
+    },
+    {
+      "name": "Tasto",
+      "fraction": 0.33,
+      "character": "Soft, flute-like sul tasto color with weak high harmonics, played near or over the fretting hand."
+    }
+  ]
+}

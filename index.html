@@ -1,0 +1,499 @@
+<script id="dsp" type="text/plain">
+/* fretwork string engine
+   Six coupled digital waveguides, one per string, plus a body.
+   Runs inside an AudioWorklet. Also loaded verbatim by dev/verify.mjs,
+   which is why the only worklet globals touched are at the very bottom. */
+
+const RATE = sampleRate;
+const TAU = Math.PI * 2;
+
+function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/* Linear until 0.8, then a smooth knee. Nothing normal ever reaches it,
+   but a full six string strum through a resonant body can, and a hard
+   clamp there is an audible edge. */
+function soft(x) {
+  if (x > 0.8) return 0.8 + 0.2 * Math.tanh((x - 0.8) * 5);
+  if (x < -0.8) return -0.8 - 0.2 * Math.tanh((-x - 0.8) * 5);
+  return x;
+}
+
+/* xorshift32. Seeded so the verify harness gets the same signal every run. */
+function makeRng(seed) {
+  let s = (seed >>> 0) || 22222;
+  return function () {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5;  s >>>= 0;
+    return (s / 2147483648) - 1;
+  };
+}
+
+/* ---- one pole lowpass, unity gain at DC -------------------------------
+   H(z) = (1-g) / (1 - g z^-1)
+   The loop needs both its magnitude and its phase delay at the fundamental:
+   the phase delay is stolen from the delay line length, otherwise every
+   note sits flat and the error grows as you go up the neck. */
+class OnePole {
+  constructor() { this.g = 0; this.z = 0; }
+  process(x) { const y = (1 - this.g) * x + this.g * this.z; this.z = y; return y; }
+  reset() { this.z = 0; }
+}
+function onePoleMag(g, w) {
+  return (1 - g) / Math.sqrt(1 - 2 * g * Math.cos(w) + g * g);
+}
+function onePolePhaseDelay(g, w) {
+  if (w < 1e-7) return g / (1 - g);
+  return Math.atan2(g * Math.sin(w), 1 - g * Math.cos(w)) / w;
+}
+
+/* ---- constant peak gain bandpass, RBJ cookbook ---- */
+class Biquad {
+  constructor() { this.b0 = 1; this.b1 = 0; this.b2 = 0; this.a1 = 0; this.a2 = 0;
+                  this.x1 = 0; this.x2 = 0; this.y1 = 0; this.y2 = 0; }
+  bandpass(f, q, rate) {
+    const w0 = TAU * clamp(f, 10, rate * 0.45) / rate;
+    const c = Math.cos(w0), a = Math.sin(w0) / (2 * Math.max(0.3, q));
+    const a0 = 1 + a;
+    this.b0 = a / a0; this.b1 = 0; this.b2 = -a / a0;
+    this.a1 = (-2 * c) / a0; this.a2 = (1 - a) / a0;
+  }
+  process(x) {
+    const y = this.b0 * x + this.b1 * this.x1 + this.b2 * this.x2
+            - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1; this.x1 = x; this.y2 = this.y1; this.y1 = y;
+    return y;
+  }
+  reset() { this.x1 = this.x2 = this.y1 = this.y2 = 0; }
+}
+
+/* ---- delay line with 4 point Lagrange fractional read -----------------
+   Lagrange rather than an allpass because the read position moves every
+   sample for bends, slides and vibrato, and an allpass coefficient that
+   moves that fast rings. Lagrange has no state and never exceeds unity
+   gain, which matters when it sits inside a loop running at 0.99. */
+class Delay {
+  constructor(size) {
+    this.n = size; this.mask = size - 1;
+    this.buf = new Float32Array(size); this.w = 0;
+  }
+  write(x) { this.buf[this.w] = x; this.w = (this.w + 1) & this.mask; }
+  read(d) {
+    if (d < 3) d = 3;
+    if (d > this.n - 6) d = this.n - 6;
+    const I = Math.floor(d) - 1;
+    const mu = d - I;
+    const b = this.buf, m = this.mask, w = this.w;
+    const x0 = b[(w - I) & m];
+    const x1 = b[(w - I - 1) & m];
+    const x2 = b[(w - I - 2) & m];
+    const x3 = b[(w - I - 3) & m];
+    const m1 = mu - 1, m2 = mu - 2, m3 = mu - 3;
+    return (-(m1 * m2 * m3) / 6) * x0
+         + ((mu * m2 * m3) / 2) * x1
+         + (-(mu * m1 * m3) / 2) * x2
+         + ((mu * m1 * m2) / 6) * x3;
+  }
+  clear() { this.buf.fill(0); this.w = 0; }
+}
+
+/* ---- one string ---- */
+const ST_IDLE = 0, ST_CHOKE = 1;
+
+class GuitarString {
+  constructor(rate, idx, rng) {
+    this.rate = rate; this.idx = idx; this.rng = rng;
+    this.delay = new Delay(4096);
+    this.lp = new OnePole();
+    this.lp.g = 0.35;
+
+    this.f0 = 110;
+    this.baseDelay = 400;   // from pitch
+    this.curDelay = 400;    // smoothed, this is what the read uses
+    this.bendCents = 0;
+    this.vibDepth = 0; this.vibRate = 5.2; this.vibPhase = 0;
+    this.glideRate = 1;     // 1 = instant, small = slide
+
+    this.loopGain = 0.99;
+    this.t60 = 5;
+    this.harm = 1;          // 1 for a stopped note, 2 or 3 for a touch harmonic
+    this.kappa = 0.6;       // share of the stability margin spent on coupling
+    this.coupleGain = 0.001;
+    this.damp = 1;          // choke multiplier applied to the loop
+
+    /* Counted cosine crossfade rather than an exponential one. Reloading a
+       delay line that is still ringing is a discontinuity in the signal; the
+       only way to hide it is to be at exactly zero when it happens and to
+       leave again with zero slope. An exponential never quite gets there. */
+    this.env = 0;
+    this.fadeN = 0; this.fadeI = 0; this.fadeIn = true; this.fadeFrom = 0;
+    this.state = ST_IDLE;
+    this.pending = null;
+
+    this.level = 0;         // peak follower, drives the visuals
+    this.combDepth = 0; this.combFrac = 0.12;
+
+    /* finger and pick contact noise. Real string squeak lives around 2 kHz,
+       so it goes through a bandpass rather than coming out as white noise. */
+    this.noiseEnv = 0; this.noiseBp = new Biquad(); this.noiseBp.bandpass(2100, 0.9, rate);
+    this.fretNoise = 0.5;
+    this.pan = 0;
+    this.lastOut = 0;
+    /* mirrors the bridge filter on this string alone, so the bridge bus can
+       be handed to it with its own contribution subtracted cleanly */
+    this.selfLp = new OnePole(); this.selfLp.g = 0.5;
+    this.ringing = false;
+  }
+
+  setPitch(f0, glide) {
+    this.f0 = clamp(f0, 20, 3000);
+    this.harm = 1;
+    this.glideRate = glide === undefined ? 1 : glide;
+    this.recalc();
+    this.curDelay = this.baseDelay;
+  }
+
+  /* The loop is: delay line -> lowpass -> gain -> back in.
+     Total round trip must equal rate/f0, so the lowpass phase delay comes
+     out of the delay line length. Then the gain is chosen so the loop
+     magnitude at the fundamental gives the decay we asked for. */
+  recalc() {
+    const bent = clamp(this.f0 * this.harm * Math.pow(2, this.bendCents / 1200), 20, 5000);
+    const w0 = TAU * bent / this.rate;
+    const g = this.lp.g;
+    this.baseDelay = this.rate / bent - onePolePhaseDelay(g, w0);
+    if (this.baseDelay < 4) this.baseDelay = 4;
+    const t60 = this.t60 * (this.harm > 1 ? 1.7 : 1);
+    const target = Math.pow(10, -3 / (bent * Math.max(0.05, t60)));
+    const mag = onePoleMag(g, w0);
+    this.loopGain = Math.min(0.9997, target / Math.max(1e-6, mag));
+    /* Sympathetic coupling is a feedback network across six resonators.
+       Two identical strings coupled by c go unstable when loopGain + c > 1,
+       and six in phase when loopGain + 5c > 1. Scaling each string's share
+       to its own loss keeps that sum at kappa of the way to the edge no
+       matter how the instrument is tuned or how long it is set to ring. */
+    this.coupleGain = (this.kappa * (1 - this.loopGain)) / 5;
+  }
+
+  setTone(brightness, t60) {
+    this.lp.g = clamp(0.62 - brightness * 0.55, 0.02, 0.86);
+    this.t60 = t60;
+    this.recalc();
+  }
+
+  startFade(rising, seconds) {
+    this.fadeIn = rising;
+    this.fadeN = Math.max(1, Math.round(seconds * this.rate));
+    this.fadeI = 0;
+    this.fadeFrom = this.env;
+  }
+
+  pluck(cfg) {
+    this.pending = cfg;
+    if (cfg.bend !== undefined) this.bendCents = cfg.bend;
+    if (cfg.freq) this.f0 = clamp(cfg.freq, 20, 3000);
+    this.harm = cfg.harmonic > 1 ? cfg.harmonic : 1;
+    this.recalc();
+    this.glideRate = cfg.slide ? cfg.slide : 1;
+    if (!cfg.slide) this.curDelay = this.baseDelay;
+    if (this.level < 0.0035) {
+      this.applyPluck();
+      this.env = 0;
+      this.startFade(true, 0.0012);
+      this.state = ST_IDLE;
+    } else {
+      this.startFade(false, 0.0026);
+      this.state = ST_CHOKE;
+      this.noiseEnv = (0.12 + cfg.vel * 0.15) * this.fretNoise;
+    }
+  }
+
+  /* Load one period of the plucked shape into the delay line.
+     A triangle peaking at the pluck point has harmonic amplitudes
+     sin(n*pi*beta)/n^2, which is the real plucked string spectrum and gives
+     the pluck position nulls for free. Rounding the corner is the
+     difference between a fingertip and a hard plectrum. */
+  applyPluck() {
+    const cfg = this.pending; this.pending = null;
+    if (!cfg) return;
+    const N = Math.max(8, Math.round(this.baseDelay));
+    const beta = clamp(cfg.pos === undefined ? 0.17 : cfg.pos, 0.02, 0.5);
+    const vel = clamp(cfg.vel, 0.02, 1);
+    const amp = 0.55 * Math.pow(vel, 0.85) * (cfg.harmonic > 1 ? 0.5 : 1);
+
+    const span = N + 8;
+    const tmp = new Float32Array(span);
+    for (let k = 0; k < span; k++) {
+      const ph = (k % N) / N;
+      tmp[k] = (ph < beta ? ph / beta : (1 - ph) / (1 - beta)) - 0.5;
+    }
+
+    /* soften the corner: repeated 3 point averages, wrapped */
+    const hard = clamp((cfg.hard === undefined ? 0.5 : cfg.hard) * 0.6 + vel * 0.4, 0, 1);
+    const passes = Math.round((1 - hard) * 26);
+    if (passes > 0) {
+      const t2 = new Float32Array(span);
+      for (let p = 0; p < passes; p++) {
+        for (let k = 0; k < span; k++) {
+          const a = tmp[(k - 1 + span) % span], b = tmp[k], c = tmp[(k + 1) % span];
+          t2[k] = (a + 2 * b + c) * 0.25;
+        }
+        tmp.set(t2);
+      }
+    }
+
+    /* pick contact noise, mixed into the loop so it decays with the string */
+    const nAmt = (cfg.noise === undefined ? 0.14 : cfg.noise) * (0.4 + vel * 0.6);
+    const nlp = new OnePole(); nlp.g = 0.3;
+    for (let k = 0; k < span; k++) tmp[k] += nlp.process(this.rng()) * nAmt;
+
+    let sum = 0;
+    for (let k = 0; k < span; k++) sum += tmp[k];
+    const mean = sum / span;
+
+    const buf = this.delay.buf, mask = this.delay.mask, w = this.delay.w;
+    for (let k = 0; k < span; k++) buf[(w - 1 - k) & mask] = (tmp[k] - mean) * amp;
+
+    this.lp.reset();
+    this.level = amp;
+    this.ringing = true;
+  }
+
+  step(coupleIn) {
+    if (this.fadeN > 0) {
+      this.fadeI++;
+      const t = this.fadeI / this.fadeN;
+      const c = 0.5 - 0.5 * Math.cos(Math.PI * (t > 1 ? 1 : t));
+      this.env = this.fadeIn ? this.fadeFrom + (1 - this.fadeFrom) * c
+                             : this.fadeFrom * (1 - c);
+      if (this.fadeI >= this.fadeN) {
+        this.fadeN = 0;
+        if (this.fadeIn) this.env = 1;
+        else {
+          this.env = 0;
+          if (this.state === ST_CHOKE) {
+            this.applyPluck();
+            this.state = ST_IDLE;
+            this.startFade(true, 0.0012);
+          }
+        }
+      }
+    }
+
+    if (this.vibDepth > 0) {
+      this.vibPhase += TAU * this.vibRate / this.rate;
+      if (this.vibPhase > TAU) this.vibPhase -= TAU;
+    }
+    const vib = this.vibDepth > 0
+      ? this.baseDelay * (Math.pow(2, (-Math.sin(this.vibPhase) * this.vibDepth) / 1200) - 1)
+      : 0;
+    const want = this.baseDelay + vib;
+    this.curDelay += (want - this.curDelay) * this.glideRate;
+
+    const y = this.delay.read(this.curDelay);
+    const lpOut = this.lp.process(y);
+    let inp = lpOut * this.loopGain * this.damp + coupleIn * this.coupleGain;
+    if (!(inp > -6 && inp < 6)) inp = 0;
+    this.delay.write(inp);
+
+    let out = y;
+    if (this.combDepth > 0) {
+      const tap = clamp(this.curDelay * (1 - this.combFrac), 3, this.curDelay - 3);
+      out = y - this.combDepth * this.delay.read(tap);
+    }
+
+    out *= this.env;
+
+    /* Contact noise sits outside the string envelope on purpose: the sound
+       of a hand landing on a ringing string happens while the string is
+       being silenced, so it must survive the choke fade. */
+    if (this.noiseEnv > 0.00002) {
+      out += this.noiseBp.process(this.rng()) * this.noiseEnv;
+      this.noiseEnv *= 0.9982;
+    } else this.noiseEnv = 0;
+
+    const a = out < 0 ? -out : out;
+    this.level += a > this.level ? (a - this.level) * 0.02 : (a - this.level) * 0.0004;
+    if (this.level < 1e-5) { this.level = 0; this.ringing = false; }
+    return out;
+  }
+
+  choke(amount) {
+    this.damp = 1 - clamp(amount, 0, 1) * 0.98;
+    if (amount > 0.9 && this.level > 0.01) this.noiseEnv = 0.06 * this.fretNoise;
+  }
+  silence() {
+    this.delay.clear(); this.lp.reset();
+    this.level = 0; this.env = 0; this.fadeN = 0; this.noiseEnv = 0;
+    this.state = ST_IDLE; this.pending = null;
+  }
+}
+
+/* ---- body ---------------------------------------------------------------
+   A parallel bank of bandpasses standing in for the air and plate modes.
+   Cheaper than convolution, and it can be swept live, which is what the
+   Body control does. Two banks detuned against each other make the stereo. */
+class BodyBank {
+  constructor(rate, spread) {
+    this.rate = rate; this.spread = spread;
+    this.filters = []; this.gains = []; this.dry = 1;
+  }
+  set(modes, mix) {
+    this.filters = []; this.gains = [];
+    for (const m of modes) {
+      const b = new Biquad();
+      b.bandpass(m.freqHz * this.spread, m.q, this.rate);
+      this.filters.push(b);
+      this.gains.push((Math.pow(10, m.gainDb / 20) - 1) * mix);
+    }
+    this.dry = 1;
+  }
+  process(x) {
+    let s = x * this.dry;
+    for (let i = 0; i < this.filters.length; i++) s += this.filters[i].process(x) * this.gains[i];
+    return s;
+  }
+  reset() { for (const f of this.filters) f.reset(); }
+}
+
+/* ---- the instrument ---- */
+class Guitar {
+  constructor(rate) {
+    this.rate = rate;
+    this.rng = makeRng(0x9e3779b9);
+    this.strings = [];
+    for (let i = 0; i < 6; i++) this.strings.push(new GuitarString(rate, i, this.rng));
+
+    this.bridgeLp = new OnePole(); this.bridgeLp.g = 0.5;
+    this.kappa = 0.6;
+
+    this.bodyL = new BodyBank(rate, 1.0);
+    this.bodyR = new BodyBank(rate, 1.014);
+    this.bodyMix = 1;
+
+    this.dcxL = 0; this.dcyL = 0; this.dcxR = 0; this.dcyR = 0;
+    this.out = 0.34;
+    this.meterTick = 0;
+    this.levels = new Float32Array(6);
+    this.post = null;
+
+    this.setInstrument({
+      brightness: 0.55, decaySeconds: 5.5, combDepth: 0, combFrac: 0.12, fretNoise: 0.5,
+      modes: [
+        { name: 'air',   freqHz: 102, q: 12, gainDb: 4.5 },
+        { name: 'top',   freqHz: 204, q: 16, gainDb: 3.0 },
+        { name: 'back',  freqHz: 262, q: 18, gainDb: 1.5 },
+        { name: 'upper', freqHz: 435, q: 14, gainDb: 1.0 },
+      ],
+    });
+    this.setTuning([82.407, 110.0, 146.832, 195.998, 246.942, 329.628]);
+  }
+
+  setInstrument(inst) {
+    this.inst = inst;
+    this.bodyL.set(inst.modes, this.bodyMix);
+    this.bodyR.set(inst.modes, this.bodyMix);
+    for (let i = 0; i < 6; i++) {
+      const s = this.strings[i];
+      /* higher strings are brighter and die sooner, same as the real thing */
+      const up = i / 5;
+      s.setTone(clamp(inst.brightness + up * 0.22, 0.02, 0.98),
+                inst.decaySeconds * (1 - up * 0.42));
+      s.combDepth = inst.combDepth;
+      s.combFrac = inst.combFrac;
+      s.fretNoise = inst.fretNoise === undefined ? 0.5 : inst.fretNoise;
+      s.kappa = this.kappa;
+      s.recalc();
+      s.pan = (i - 2.5) / 2.5 * 0.22;
+    }
+  }
+
+  setTuning(freqs) {
+    this.open = freqs.slice();
+    for (let i = 0; i < 6; i++) this.strings[i].setPitch(freqs[i]);
+  }
+
+  handle(msg) {
+    const S = this.strings;
+    switch (msg.t) {
+      case 'pluck': { const s = S[msg.s]; if (s) s.pluck(msg); break; }
+      case 'mute': { const s = S[msg.s]; if (s) s.choke(msg.a); break; }
+      case 'allmute': { for (const s of S) s.choke(msg.a); break; }
+      case 'bend': { const s = S[msg.s]; if (s) { s.bendCents = msg.c; s.recalc(); } break; }
+      case 'vib': { const s = S[msg.s]; if (s) { s.vibDepth = msg.d; s.vibRate = msg.r || 5.2; } break; }
+      case 'tuning': this.setTuning(msg.f); break;
+      case 'inst': this.setInstrument(msg.inst); break;
+      case 'couple': {
+        this.kappa = clamp(msg.v, 0, 0.95);
+        for (const s of S) { s.kappa = this.kappa; s.recalc(); }
+        break;
+      }
+      case 'fretnoise': for (const s of S) s.fretNoise = clamp(msg.v, 0, 2); break;
+      case 'body': {
+        this.bodyMix = msg.v;
+        this.bodyL.set(this.inst.modes, this.bodyMix);
+        this.bodyR.set(this.inst.modes, this.bodyMix);
+        break;
+      }
+      case 'silence': for (const s of S) s.silence(); break;
+    }
+  }
+
+  render(L, R, n) {
+    const S = this.strings;
+    for (let i = 0; i < n; i++) {
+      const bus = this.bridgeLp.z;
+      let sum = 0, sl = 0, sr = 0;
+      for (let k = 0; k < 6; k++) {
+        const s = S[k];
+        /* every string hears the bridge except its own contribution */
+        const o = s.step(bus - s.selfLp.z);
+        s.selfLp.process(o);
+        s.lastOut = o;
+        sum += o;
+        const p = s.pan;
+        sl += o * (1 - p) * 0.5; sr += o * (1 + p) * 0.5;
+      }
+      this.bridgeLp.process(sum);
+
+      /* dc blocker on each side, the loop can drift */
+      const dl = sl - this.dcxL + 0.9975 * this.dcyL;
+      this.dcxL = sl; this.dcyL = dl;
+      const dr = sr - this.dcxR + 0.9975 * this.dcyR;
+      this.dcxR = sr; this.dcyR = dr;
+
+      L[i] = soft(this.bodyL.process(dl) * this.out);
+      R[i] = soft(this.bodyR.process(dr) * this.out);
+    }
+
+    this.meterTick += n;
+    if (this.meterTick >= 1024) {
+      this.meterTick = 0;
+      for (let k = 0; k < 6; k++) this.levels[k] = S[k].level;
+      if (this.post) this.post({ t: 'lv', v: Array.from(this.levels) });
+    }
+  }
+}
+
+/* ---- worklet shell. Everything above is plain javascript. ---- */
+if (typeof registerProcessor === 'function') {
+  class FretworkProcessor extends AudioWorkletProcessor {
+    constructor() {
+      super();
+      this.guitar = new Guitar(sampleRate);
+      this.guitar.post = (m) => this.port.postMessage(m);
+      this.port.onmessage = (e) => {
+        const d = e.data;
+        if (Array.isArray(d)) { for (const m of d) this.guitar.handle(m); }
+        else this.guitar.handle(d);
+      };
+    }
+    process(inputs, outputs) {
+      const o = outputs[0];
+      if (o && o.length >= 2) this.guitar.render(o[0], o[1], o[0].length);
+      return true;
+    }
+  }
+  registerProcessor('fretwork-string', FretworkProcessor);
+}
+</script>
