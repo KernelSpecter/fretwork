@@ -66,6 +66,24 @@ await shoot('phone.png', { width: 412, height: 880 }, async (page) => {
   await page.waitForTimeout(120);
 });
 
+/* the card GitHub shows when the repo is linked anywhere: 1280x640,
+   cropped to the header and the neck so the guitar fills the frame */
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  await page.goto(pathToFileURL(path.join(ROOT, 'index.html')).href);
+  await page.waitForTimeout(800);
+  const box = await page.locator('#neck').boundingBox();
+  await page.mouse.click(box.x + box.width * 0.2, box.y + box.height * 0.5);
+  await page.waitForTimeout(700);
+  await page.evaluate(() => {
+    setChord(CHORDS.find((c) => c.name === 'Gadd9') || CHORDS[0]);
+    strum(1, 0.92);
+  });
+  await page.waitForTimeout(110);
+  await page.screenshot({ path: path.join(OUT, 'social.png'), clip: { x: 0, y: 0, width: 1280, height: 640 } });
+  await page.close();
+}
+
 await browser.close();
 for (const f of fs.readdirSync(OUT)) {
   console.log(f, (fs.statSync(path.join(OUT, f)).size / 1024).toFixed(0) + ' KB');

@@ -152,7 +152,7 @@ node dev/qa.mjs            # pointers, the tape, the sequencer, resizing, knob e
 node dev/verify.mjs --wav  # renders dev/demo.wav if you would rather listen
 ```
 
-The DSP harness reports 15 of 15 checks passed: worst tuning error across the
+The DSP harness reports 19 of 19 checks passed: worst tuning error across the
 fretboard is 0.05 cents, the low E decays in 5.35 seconds against a requested
 5.5, a 30 second six-string ring stays finite with no NaNs and a tail
 4.07e-13 by the end, a re-pluck's worst sample-to-sample step is 0.01126
@@ -160,16 +160,24 @@ against 0.01126 for a fresh pluck (no sharper), plucking near the bridge
 measures a spectral centroid of 238 Hz against 157 Hz over the neck,
 plucking at a fifth of the string suppresses the fifth harmonic by 21.9 dB
 and the tenth by 8.5 dB relative to their neighbours, and a scheduled
-six-string strum lands within 2 samples of where it was told to fire. The
+six-string strum lands within 2 samples of where it was told to fire. Two more
+check the paths the interface actually uses: a note handed an absolute
+AudioContext time fires within 1 sample of it, a six string strum arrives
+spread over 60 ms rather than as one block chord, and a capo carries a
+ringing fretted note up with it, 146.8 Hz to 164.8 Hz, by sliding rather
+than jumping. The
 data checker reports 96 voicings, 9 tunings, and 16 progressions checked, no
 problems found. The keyboard harness presses every documented key in a real browser and
-checks what the engine was actually told to do, 26 of 26 passing, including
+checks what the engine was actually told to do, 32 of 32 passing, including
 that an upstroke really does reach fewer strings than a downstroke. The wider
 harness drives pointers (two at once), all four guitars, all nine tunings,
 all six spaces, every knob at both extremes, the tape end to end including
 the WAV header fields, the sequencer while everything under it changes, and
-six viewport sizes from 320x480 to 2560x700: 24 of 24 passing, with the
-worst peak anywhere in that sweep measuring 0.98 of full scale.
+eight viewport sizes from 200x200 to 2560x700: 28 of 28 passing, with the
+worst peak anywhere in that sweep measuring 0.92 of full scale. It also
+measures the capo from the audio that comes back out of the tape rather
+than from the message that went in: within half a cent at the nut, the
+second fret and the fifth.
 
 ## What it does not do
 
