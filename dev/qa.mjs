@@ -369,14 +369,18 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
     const loud = await takePeak();
 
     /* now push everything and make sure the export cannot clip */
-    Object.assign(p, { drive: 1, level: 1, delay: 1, fbk: 1, room: 1, chorus: 1, body: 1, bass: 1, treble: 1, mid: 1 });
-    for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
-    const hot = await takePeak();
-
-    Object.assign(p, DEFAULTS);
-    for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
-    document.getElementById('clearBtn').click();
-    post({ t: 'silence' });
+    let hot;
+    try {
+      Object.assign(p, { drive: 1, level: 1, delay: 1, fbk: 1, room: 1, chorus: 1, body: 1, bass: 1, treble: 1, mid: 1 });
+      for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
+      hot = await takePeak();
+    } finally {
+      /* whatever happened, do not leave the knobs pinned for every later check */
+      Object.assign(p, DEFAULTS);
+      for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
+      document.getElementById('clearBtn').click();
+      post({ t: 'silence' });
+    }
     return { quiet, loud, hot };
   });
   check('the Level knob reaches the tape', r.loud.pk > r.quiet.pk * 1.8,
@@ -408,6 +412,58 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
   });
   check('an abandoned overdub does not stay armed and quietly layer the next take',
     !r.stuck && r.replaced, `still armed ${r.stuck}, take replaced ${r.replaced}`);
+}
+
+/* ---------- 5e. scheduling, measured through the real worklet clock ----------
+   The engine queues on the worklet's own frame counter; the interface hands
+   it an AudioContext timestamp. Node never exercises that join, because
+   currentFrame does not exist there, so it gets checked here instead. This
+   is the seam where every strum once collapsed into a block chord. */
+{
+  const r = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((q) => setTimeout(q, ms));
+    const onset = (thresh) => {
+      if (!tape.buf) return null;
+      const d = tape.buf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) if (Math.abs(d[i]) > thresh) return i / tape.buf.sampleRate;
+      return null;
+    };
+    const take = async (fn, ms) => {
+      document.getElementById('clearBtn').click();
+      post({ t: 'silence' });
+      await sleep(160);
+      recStart(); await sleep(60);
+      fn(audio.ctx.currentTime);
+      await sleep(ms);
+      recStop(); await sleep(420);
+      return onset(0.01);
+    };
+    const now = await take(() => post({ t: 'pluck', s: 0, vel: 0.95, pos: 0.17, freq: 82.407 }), 800);
+    const later = await take((t) => post({ t: 'pluck', s: 0, vel: 0.95, pos: 0.17, freq: 82.407, at: t + 0.3 }), 1100);
+
+    /* and every string of a real strum, one at a time so each onset is clean */
+    p.spread = 1; onParam('spread');
+    const onsets = [];
+    for (let s = 0; s < 6; s++) {
+      onsets.push(await take((t) => post({
+        t: 'pluck', s, vel: 0.8, pos: 0.17, freq: noteFreq(s, 0), at: t + 0.02 + s * 0.034,
+      }), 700));
+    }
+    Object.assign(p, DEFAULTS);
+    for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
+    document.getElementById('clearBtn').click();
+    return { now, later, onsets };
+  });
+  const shift = r.later - r.now;
+  check('a note asked for later actually arrives later',
+    shift > 0.27 && shift < 0.33,
+    `scheduled 0.3s ahead, landed ${shift.toFixed(3)}s after the unscheduled one`);
+  const gaps = [];
+  for (let i = 1; i < 6; i++) gaps.push(r.onsets[i] - r.onsets[i - 1]);
+  const sweep = r.onsets[5] - r.onsets[0];
+  check('a strum sweeps across the strings instead of landing as a block chord',
+    gaps.every((g) => g > 0.02 && g < 0.06) && sweep > 0.13,
+    `${gaps.map((g) => Math.round(g * 1000)).join(', ')} ms between strings, ${Math.round(sweep * 1000)} ms across`);
 }
 
 /* ---------- 6. the sequencer under churn ---------- */

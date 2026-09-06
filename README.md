@@ -173,11 +173,16 @@ that an upstroke really does reach fewer strings than a downstroke. The wider
 harness drives pointers (two at once), all four guitars, all nine tunings,
 all six spaces, every knob at both extremes, the tape end to end including
 the WAV header fields, the sequencer while everything under it changes, and
-eight viewport sizes from 200x200 to 2560x700: 28 of 28 passing, with the
+eight viewport sizes from 200x200 to 2560x700: 30 of 30 passing, with the
 worst peak anywhere in that sweep measuring 0.92 of full scale. It also
 measures the capo from the audio that comes back out of the tape rather
-than from the message that went in: within half a cent at the nut, the
-second fret and the fifth.
+than from the message that went in, within half a cent at the nut, the
+second fret and the fifth, and it times a strum through the real worklet
+clock: a note asked for 0.3 seconds ahead lands 0.308 seconds late, and a
+six string strum sweeps across roughly 150 ms instead of landing as one
+block chord. That last one is the seam where the two halves meet, and it
+is the only place both other harnesses could pass while the instrument
+was wrong.
 
 ## What it does not do
 
