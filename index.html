@@ -1055,6 +1055,21 @@ function makeCabIR(ctx) {
   return buf;
 }
 
+/* Linear below 0.7 and asymptotic above it, so nothing can leave the page
+   above full scale no matter where the knobs are. The compressor ahead of
+   it does the musical work; this only catches the transient that gets
+   through during its attack. */
+function safetyCurve() {
+  const n = 4096, c = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    const a = Math.abs(x);
+    const y = a <= 0.7 ? a : 0.7 + 0.28 * Math.tanh((a - 0.7) * 3.2);
+    c[i] = (x < 0 ? -1 : 1) * y;
+  }
+  return c;
+}
+
 function driveCurve(amount) {
   const n = 2048, c = new Float32Array(n);
   const k = 0.4 + amount * amount * 42;
@@ -1152,6 +1167,12 @@ async function startAudio() {
   n.limiter.threshold.value = -2.5; n.limiter.knee.value = 0;
   n.limiter.ratio.value = 20; n.limiter.attack.value = 0.002; n.limiter.release.value = 0.12;
   n.analyser = ctx.createAnalyser(); n.analyser.fftSize = 1024;
+  n.safety = ctx.createWaveShaper();
+  n.safety.oversample = '2x';
+  n.safety.curve = safetyCurve();
+  n.tapeSafety = ctx.createWaveShaper();
+  n.tapeSafety.oversample = '2x';
+  n.tapeSafety.curve = safetyCurve();
 
   /* wiring */
   g.connect(n.pre).connect(n.comp).connect(n.driveIn).connect(n.shaper).connect(n.driveOut);
@@ -1173,14 +1194,15 @@ async function startAudio() {
   n.delay.connect(n.delayRet).connect(n.instOut);
   n.chorusSum.connect(n.verbSend).connect(n.verb).connect(n.verbRet).connect(n.instOut);
 
-  n.instOut.connect(n.master).connect(n.limiter).connect(ctx.destination);
-  n.limiter.connect(n.analyser);
+  n.instOut.connect(n.master).connect(n.limiter).connect(n.safety).connect(ctx.destination);
+  n.safety.connect(n.analyser);
 
   /* the recorder only ever hears the instrument, never the loop playing
      back, otherwise every overdub would print the previous take again */
   const rec = new AudioWorkletNode(ctx, 'fretwork-tape', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
   const sink = ctx.createGain(); sink.gain.value = 0;
-  n.instOut.connect(rec); rec.connect(sink).connect(ctx.destination);
+  n.instOut.connect(n.tapeSafety).connect(rec);
+  rec.connect(sink).connect(ctx.destination);
   audio.rec = rec;
   rec.port.onmessage = (e) => tape.onChunk(e.data);
 
@@ -1897,22 +1919,30 @@ function frame() {
 
 const touches = new Map();
 
-cv.addEventListener('pointerdown', async (e) => {
-  if (!audio.ready) { const ok = await startAudio(); if (!ok) return; }
-  cv.setPointerCapture(e.pointerId);
-  const b = toBoard(e.clientX, e.clientY);
+function beginTouch(id, clientX, clientY) {
+  const b = toBoard(clientX, clientY);
   hideHint();
   if (b.x > L.neckEnd - L.gap * 0.6) {
     const t = { mode: 'strum', s: stringAt(b.y), y: b.y, t: performance.now() };
-    touches.set(e.pointerId, t);
+    touches.set(id, t);
     if (onBoard(b)) strumOne(t.s, state.vel);
   } else if (onBoard(b)) {
     const s = stringAt(b.y), f = fretAt(b.x);
-    touches.set(e.pointerId, { mode: 'fret', s, f });
+    touches.set(id, { mode: 'fret', s, f });
     state.held[s] = f;
     pluck(s, f, state.vel);
   }
+}
+
+cv.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  /* Capture synchronously and defensively. Doing it after awaiting the
+     audio boot means the pointer can already be gone, and the throw would
+     swallow the very first note anyone plays. */
+  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* nothing to capture */ }
+  const id = e.pointerId, x = e.clientX, y = e.clientY;
+  if (!audio.ready) { startAudio().then((ok) => { if (ok) beginTouch(id, x, y); }); return; }
+  beginTouch(id, x, y);
 });
 
 function strumOne(s, v) {

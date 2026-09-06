@@ -1,0 +1,164 @@
+# fretwork
+
+A playable guitar in one HTML file. There are no samples anywhere in it: every
+note comes from six coupled digital waveguides running inside an
+AudioWorklet, synthesized from scratch on every pluck.
+
+Play it at https://kernelspecter.github.io/fretwork/, or download
+`index.html` and open it directly: no server, no build step, no dependencies.
+It also runs from a local server (`python -m http.server`, or similar) if you
+prefer that. On Chrome, loading the audio worklet from a `blob:` URL fails
+when the page was opened as `file://`, because the page's origin is opaque
+there, so the worklet is loaded from a `data:` URL instead, which works from
+both a file and a server, and the blob path is kept only as a fallback.
+
+## Playing it
+
+Touch and mouse work the way a real guitar does: drag along a string on the
+neck to fret it, drag across the soundhole to strum, and touch and mouse both
+support several fingers or strings at once. Faster drags strum harder.
+
+The full keyboard map:
+
+| Key | Does |
+|---|---|
+| A S D F G H J K | Hold a chord from the rail and strum it down |
+| Space | Strum down. Hold shift for an upstroke |
+| 1 2 3 4 5 6 | Pick one open or fretted string, low E through high E |
+| X | Muted chuck |
+| M (hold) | Palm mute |
+| Q (hold) | Touch harmonic on the next pluck |
+| Up / Down | Softer or harder |
+| Left / Right | Move the capo |
+| Enter | Start and stop the strum pattern |
+| R | Record |
+
+A and D and K, by default, hold G, Em, and Cmaj7. An upstroke is not just a
+downstroke played backwards: it leaves the bottom string or two behind,
+sweeps faster, and catches closer to the bridge, so the two directions
+actually sound different, not just labeled differently.
+
+A gamepad works too: the four face buttons and four D-pad directions hold
+eight chord slots, the shoulder buttons move the capo, and the right stick
+sweeps across the strings the way a finger would, a slow tilt strumming
+slowly and a fast one strumming fast. Any MIDI input plugged in is listened
+to as well, each note on routed to whichever string can reach that pitch
+below the twelfth fret, closest string first. The input mode is auto
+detected from what is present and the header lets you override it.
+
+## How the sound is made
+
+Each string is an extended Karplus-Strong loop: a delay line read with
+4-point Lagrange interpolation, a one-pole damping filter, and a feedback
+gain picked from the decay time you asked for. Plucking loads a triangular
+displacement shape into the delay line, peaking at the pluck point rather
+than a symmetric impulse. A triangle's harmonic amplitudes fall off as
+sin(n·pi·beta)/n^2, the actual spectrum of a plucked string, and it gives the
+pluck position nulls for free: pluck at a fifth of the string and the fifth
+and tenth harmonics fall away on their own, no extra filtering required.
+
+Tuning a delay-line loop is not just delay length equals sample rate over
+frequency. The one-pole filter inside the loop adds its own phase delay, and
+if that is not subtracted from the delay line length, every note comes out
+flat, worse the higher up the neck you go: `baseDelay = rate/f0 -
+onePolePhaseDelay(g, w0)`.
+
+The six strings share a bridge, which makes them a feedback network, not six
+independent loops. Two strings coupled by an amount `c` go unstable once
+`loopGain + c > 1`, and six coupled in phase go unstable at `loopGain + 5c >
+1`. Each string's share of the bridge signal is scaled to its own loss, so
+the whole instrument stays under that ceiling no matter what tuning or decay
+time is set.
+
+Re-plucking a string that is still ringing means dropping a new waveform into
+a delay line mid-cycle, a step discontinuity if done carelessly. The fix is a
+counted cosine crossfade: it reaches exactly zero, with zero slope, right
+before the reload, and leaves zero with zero slope on the way back up. A
+re-pluck ends up no sharper an attack than a fresh one.
+
+The body is a parallel bank of bandpass filters standing in for the air and
+top and back plate modes of the actual instrument, cheaper than a convolution
+and adjustable in real time by the Body knob, with two banks tuned slightly
+apart making the stereo width. Pickup position is modeled as a feedforward
+comb filter that subtracts a delayed copy of the string signal, the delay set
+by where the pickup sits along the string: a real pickup only reads the
+string's motion at one fixed point, so it cancels whatever harmonic has a
+node there, which is most of what makes an electric guitar sound like the
+position of its pickup rather than like a generic string.
+
+## The reference data
+
+Nine tunings, four instrument bodies (steel-string dreadnought, nylon
+classical, solidbody electric, archtop jazz, each with body mode frequencies,
+Q, and gain sourced from published measurements cited in the data itself), 96
+chord voicings, 11 strum patterns, 16 chord progressions, and 6 pluck
+positions live in a JSON block in the page. `dev/check-data.mjs` builds every
+voicing note by note from the open string pitches and checks it against its
+own name: no notes outside the chord, the required intervals present, a
+slash chord's stated bass actually the lowest note, no span wider than 4
+frets, no finger asked to hold two frets at once. It also recomputes every
+tuning frequency from equal temperament and checks that every progression
+only names chords that exist.
+
+## Effects and the reverbs
+
+The signal runs from the strings through a compressor, an optional overdrive
+stage, a three-band EQ, an electric-only speaker cabinet convolution, a
+two-voice chorus built from a pair of modulated short delays, a feedback
+echo, and a reverb, into a limiter. None of the six reverb spaces (small
+room, live room, hall, plate, stone church, spring tank) are recorded impulse
+responses: each is synthesized the moment the page loads, from noise shaped
+by a decay envelope and a handful of early reflections, except the spring
+tank, built from dispersive chirps sliding downward in pitch, the actual
+mechanism of a real spring reverb's boing. Nothing is fetched, so nothing can
+fail to load.
+
+## The tape
+
+Record captures what the instrument actually produced, effects chain
+included, but never the loop already playing back, so overdubbing does not
+re-record the previous take on top of itself. Loop plays the take back
+looping, and overdub adds a new take onto the existing one. A take comes back
+out of the audio graph later than it went in, by the graph's round trip
+latency, so the overdub write position is shifted back by that measured
+latency before the two takes are summed, keeping layers aligned instead of
+drifting apart the more you overdub. Export renders the loop to a 16-bit
+stereo WAV file you can save.
+
+## Running the tests
+
+```
+node dev/verify.mjs      # the DSP engine, loaded straight out of index.html
+node dev/check-data.mjs  # the chord and tuning data
+node dev/keys.mjs        # the keyboard, in a real headless browser
+```
+
+The DSP harness reports 15 of 15 checks passed: worst tuning error across the
+fretboard is 0.05 cents, the low E decays in 5.35 seconds against a requested
+5.5, a 30 second six-string ring stays finite with no NaNs and a tail
+4.07e-13 by the end, a re-pluck's worst sample-to-sample step is 0.01126
+against 0.01126 for a fresh pluck (no sharper), plucking near the bridge
+measures a spectral centroid of 238 Hz against 157 Hz over the neck,
+plucking at a fifth of the string suppresses the fifth harmonic by 21.9 dB
+and the tenth by 8.5 dB relative to their neighbours, and a scheduled
+six-string strum lands within 2 samples of where it was told to fire. The
+data checker reports 96 voicings, 9 tunings, and 16 progressions checked, no
+problems found. The keyboard harness presses every documented key in a real
+Chromium instance and reports 20 of 20 checks passing.
+
+## What it does not do
+
+There is no sample playback of any kind, so it will not sound identical to a
+particular recorded guitar the way a sampled instrument can. There is no
+physical model of the fretting hand (no independent finger tension curves, no
+real fret buzz), and the body model is a filter bank tuned to published mode
+frequencies, not a convolution against a measured impulse response of one
+actual instrument, so it approximates a body's resonance rather than
+reproducing a specific guitar's. There is no save or load of a session,
+project file, or tab: the only persistent output is the WAV export. It does
+not remember your settings between visits, and there is no undo for a tape
+beyond clearing it and starting over.
+
+## Licence
+
+MIT. Copyright KernelSpecter.
