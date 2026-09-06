@@ -426,6 +426,80 @@ const fret = (open, f) => open * Math.pow(2, f / 12);
   void g; void g3;
 }
 
+/* ---------- 13. absolute time scheduling, the path the app uses ----------
+   The app hands the engine an AudioContext timestamp, not a sample offset.
+   That path was dead once: every strum arrived as a block chord. */
+{
+  const targets = [0.10, 0.25, 0.42];
+  const err = [];
+  for (const t of targets) {
+    const g = new E.Guitar(RATE);
+    const out = render(g, 0.8, [{ at: 0, msg: { t: 'pluck', s: 2, vel: 0.9, pos: 0.15, at: t } }]).L;
+    let i = 0;
+    while (i < out.length && Math.abs(out[i]) < 1e-4) i++;
+    err.push(Math.abs(i - Math.round(t * RATE)));
+  }
+  const worst = Math.max(...err);
+  check('a pluck given an absolute time fires at that time, not on arrival',
+    worst <= 200, `worst ${worst} samples off across ${targets.length} scheduled notes`);
+
+  /* and a six string strum must actually arrive spread out */
+  const g2 = new E.Guitar(RATE);
+  const msgs = [];
+  for (let s = 0; s < 6; s++) {
+    msgs.push({ at: 0, msg: { t: 'pluck', s, vel: 0.9, pos: 0.15, at: 0.05 + s * 0.012 } });
+  }
+  const onsets = [];
+  for (let s = 0; s < 6; s++) {
+    const solo = new E.Guitar(RATE);
+    const out = render(solo, 0.5, [msgs[s]]).L;
+    let i = 0;
+    while (i < out.length && Math.abs(out[i]) < 1e-4) i++;
+    onsets.push(i / RATE);
+  }
+  const gaps = [];
+  for (let i = 1; i < 6; i++) gaps.push(onsets[i] - onsets[i - 1]);
+  const spread = onsets[5] - onsets[0];
+  check('a six string strum arrives spread out, not as one block chord',
+    spread > 0.05 && gaps.every((q) => q > 0.008 && q < 0.017),
+    `${(spread * 1000).toFixed(1)} ms from first string to last`);
+  void g2;
+}
+
+/* ---------- 14. a capo must not snap a ringing note to the open string ---------- */
+{
+  const g = new E.Guitar(RATE);
+  /* fret the A string at the fifth and let it ring */
+  const fretted = fret(OPEN[1], 5);
+  const capoUp = OPEN.map((f) => f * Math.pow(2, 2 / 12));
+  const { L } = render(g, 2.4, [
+    { at: 0, msg: { t: 'pluck', s: 1, vel: 0.95, pos: 0.17, freq: fretted } },
+    { at: 0.7, msg: { t: 'tuning', f: capoUp } },
+  ]);
+  const before = measureHz(L, fretted, 0.25);
+  const after = measureHz(L, fretted * Math.pow(2, 2 / 12), 1.3);
+  const wantAfter = fretted * Math.pow(2, 2 / 12);
+  const openAfter = capoUp[1];
+  const ok = before !== null && after !== null &&
+    Math.abs(cents(before, fretted)) < 12 &&
+    Math.abs(cents(after, wantAfter)) < 25 &&
+    Math.abs(cents(after, openAfter)) > 200;
+  check('a capo carries a ringing fretted note up with it',
+    ok,
+    before === null || after === null ? 'could not measure' :
+    `${before.toFixed(1)} Hz then ${after.toFixed(1)} Hz, wanted ${wantAfter.toFixed(1)} ` +
+    `(the open string would be ${openAfter.toFixed(1)})`);
+
+  /* and it must glide there rather than jump */
+  let worst = 0;
+  const from = Math.round(0.69 * RATE), to = Math.round(0.78 * RATE);
+  let ref = 0;
+  for (let i = 1; i < L.length; i++) { const d = Math.abs(L[i] - L[i - 1]); if (i < from && d > ref) ref = d; }
+  for (let i = from; i < to; i++) { const d = Math.abs(L[i] - L[i - 1]); if (d > worst) worst = d; }
+  check('the retune is a slide, not a jump', worst <= ref * 1.3,
+    `largest step through the change ${worst.toFixed(5)} against ${ref.toFixed(5)} while just ringing`);
+}
+
 /* ---------- optional: render something to listen to ---------- */
 if (process.argv.includes('--wav')) {
   const g = new E.Guitar(RATE);

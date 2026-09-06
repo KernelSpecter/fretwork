@@ -48,7 +48,7 @@ body::before{
   background:radial-gradient(120% 80% at 50% 26%, rgba(217,164,65,.10), rgba(217,164,65,.03) 42%, transparent 72%);
 }
 
-#app{position:relative;z-index:1;height:100%;display:flex;flex-direction:column}
+#app{position:relative;z-index:1;height:100%;display:flex;flex-direction:column;overflow-y:auto}
 
 /* ---------- engraved type ---------- */
 .eng{
@@ -93,7 +93,9 @@ select:focus-visible,.btn:focus-visible{outline:1px solid var(--lamp);outline-of
 .field .eng{white-space:nowrap}
 
 /* ---------- the neck ---------- */
-#stage{flex:1 1 auto;position:relative;min-height:0;background:#0b0a08}
+/* the neck keeps a floor so a short window squeezes the panels and scrolls
+   rather than collapsing the guitar to nothing */
+#stage{flex:1 1 auto;position:relative;min-height:104px;background:#0b0a08}
 #neck{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:crosshair}
 #hint{
   position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
@@ -186,6 +188,16 @@ select:focus-visible,.btn:focus-visible{outline:1px solid var(--lamp);outline-of
   border-bottom-width:2px;border-radius:3px;padding:2px 6px;color:#d6cbb3;white-space:nowrap}
 .keys span{color:#a3987f}
 .filters{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px}
+
+/* short windows: give the guitar what room there is */
+@media (max-height:420px){
+  header{height:34px}
+  #rail{padding:4px 8px}
+  .slot{width:52px}
+  .slot canvas{height:24px}
+  .bank{padding:5px 9px 4px}
+  .knob{width:42px}
+}
 
 /* ---------- narrow screens ---------- */
 .fields{display:flex;align-items:center;gap:14px}
@@ -634,19 +646,45 @@ class Guitar {
                 inst.decaySeconds * (1 - up * 0.42));
       s.combDepth = inst.combDepth;
       s.combFrac = inst.combFrac;
-      s.fretNoise = inst.fretNoise === undefined ? 0.5 : inst.fretNoise;
+      s.fretNoise = clamp(inst.fretNoise === undefined ? 0.5 : inst.fretNoise, 0, 2);
       s.kappa = this.kappa;
       s.recalc();
       s.pan = (i - 2.5) / 2.5 * 0.22;
     }
   }
 
+  /* A string that is still ringing was fretted somewhere. Moving the whole
+     instrument (a capo, a different tuning) should carry that note along by
+     the same interval and slide into it, not snap it down to the new open
+     pitch as though nothing had been fretted. */
   setTuning(freqs) {
+    const old = this.open;
+    for (let i = 0; i < 6; i++) {
+      const s = this.strings[i];
+      if (old && old[i] > 0 && s.level > 0.004) {
+        s.f0 = clamp(s.f0 * (freqs[i] / old[i]), 20, 3000);
+        s.recalc();
+        s.glideRate = 0.0016;
+      } else {
+        s.setPitch(freqs[i]);
+      }
+    }
     this.open = freqs.slice();
-    for (let i = 0; i < 6; i++) this.strings[i].setPitch(freqs[i]);
   }
 
+  /* Two ways to ask for a note later. `at` is an absolute AudioContext time
+     in seconds, which is what the main thread naturally has; the worklet's
+     own frame counter is on the same clock, so it converts directly. `d` is
+     a plain sample offset, used by the test harness. Anything without either
+     fires now. */
   handle(msg) {
+    if (typeof msg.at === 'number') {
+      const f = Math.round(msg.at * this.rate);
+      const ahead = f - this.now;
+      if (ahead > 1 && ahead < this.rate * 10) { this.queue.push({ at: f, msg }); return; }
+      this.dispatch(msg);
+      return;
+    }
     if (msg.d > 0) {
       this.queue.push({ at: this.now + msg.d, msg });
       return;
@@ -680,7 +718,9 @@ class Guitar {
     }
   }
 
-  render(L, R, n) {
+  render(L, R, n, syncFrame) {
+    /* line the queue clock up with the audio clock when the host has one */
+    if (syncFrame !== undefined) this.now = syncFrame;
     let off = 0;
     while (off < n) {
       let idx = -1, best = Infinity;
@@ -697,7 +737,7 @@ class Guitar {
       this.span(L, R, off, end);
       off = end;
     }
-    this.now += n;
+    if (syncFrame === undefined) this.now += n;
 
     this.meterTick += n;
     if (this.meterTick >= 1024) {
@@ -751,7 +791,10 @@ if (typeof registerProcessor === 'function') {
     }
     process(inputs, outputs) {
       const o = outputs[0];
-      if (o && o.length >= 2) this.guitar.render(o[0], o[1], o[0].length);
+      if (o && o.length >= 2) {
+        this.guitar.render(o[0], o[1], o[0].length,
+          typeof currentFrame === 'number' ? currentFrame : undefined);
+      }
       return true;
     }
   }
@@ -1063,11 +1106,14 @@ function makeCabIR(ctx) {
    it does the musical work; this only catches the transient that gets
    through during its attack. */
 function safetyCurve() {
-  const n = 4096, c = new Float32Array(n);
+  const n = 8192, c = new Float32Array(n);
+  const t = 0.72, top = 0.97, k = top - t;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
     const a = Math.abs(x);
-    const y = a <= 0.7 ? a : 0.7 + 0.28 * Math.tanh((a - 0.7) * 3.2);
+    /* the slope matches on both sides of the join, so there is no corner
+       for an oversampling filter to ring on */
+    const y = a <= t ? a : t + k * Math.tanh((a - t) / k);
     c[i] = (x < 0 ? -1 : 1) * y;
   }
   return c;
@@ -1088,6 +1134,10 @@ async function startAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   const ctx = new AC({ latencyHint: 'interactive' });
   audio.ctx = ctx;
+  /* resume synchronously, before anything is awaited. Safari only honours
+     it while the original gesture is still on the stack, and awaiting the
+     module load first is enough to lose that. */
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
 
   const src = document.getElementById('dsp').textContent + '\n' +
               document.getElementById('rec').textContent;
@@ -1170,12 +1220,18 @@ async function startAudio() {
   n.limiter.threshold.value = -2.5; n.limiter.knee.value = 0;
   n.limiter.ratio.value = 20; n.limiter.attack.value = 0.002; n.limiter.release.value = 0.12;
   n.analyser = ctx.createAnalyser(); n.analyser.fftSize = 1024;
+  /* No oversampling on purpose. The reconstruction filter of an oversampled
+     shaper overshoots its own curve, which is exactly what a last line of
+     defence must not do. Without it the output is the curve, and the curve
+     tops out at 0.97. */
   n.safety = ctx.createWaveShaper();
-  n.safety.oversample = '2x';
+  n.safety.oversample = 'none';
   n.safety.curve = safetyCurve();
   n.tapeSafety = ctx.createWaveShaper();
-  n.tapeSafety.oversample = '2x';
+  n.tapeSafety.oversample = 'none';
   n.tapeSafety.curve = safetyCurve();
+  /* the tape hears the Level knob, so an export sounds like what you heard */
+  n.recGain = ctx.createGain(); n.recGain.gain.value = 0.9;
 
   /* wiring */
   g.connect(n.pre).connect(n.comp).connect(n.driveIn).connect(n.shaper).connect(n.driveOut);
@@ -1204,7 +1260,7 @@ async function startAudio() {
      back, otherwise every overdub would print the previous take again */
   const rec = new AudioWorkletNode(ctx, 'fretwork-tape', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
   const sink = ctx.createGain(); sink.gain.value = 0;
-  n.instOut.connect(n.tapeSafety).connect(rec);
+  n.instOut.connect(n.recGain).connect(n.tapeSafety).connect(rec);
   rec.connect(sink).connect(ctx.destination);
   audio.rec = rec;
   rec.port.onmessage = (e) => tape.onChunk(e.data);
@@ -1222,10 +1278,18 @@ async function startAudio() {
 
   audio.ready = true;
   applyAll();
-  if (ctx.state === 'suspended') await ctx.resume();
+  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) { /* needs another gesture */ } }
   meterLoop();
   return true;
 }
+
+function wake() {
+  const c = audio.ctx;
+  if (c && c.state === 'suspended') c.resume().catch(() => {});
+}
+document.addEventListener('pointerdown', wake, true);
+document.addEventListener('keydown', wake, true);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
 
 function post(msg) { if (audio.ready) audio.guitar.port.postMessage(msg); }
 
@@ -1279,6 +1343,7 @@ function applyAll() {
   n.delayFb.gain.setTargetAtTime(p.fbk * 0.82, T, S);
   n.verbSend.gain.setTargetAtTime(p.room * 1.15, T, S);
   n.master.gain.setTargetAtTime(lerp(0.12, 1.7, p.level), T, S);
+  n.recGain.gain.setTargetAtTime(lerp(0.12, 1.7, p.level), T, S);
 }
 
 /* ================================================================
@@ -1418,10 +1483,13 @@ let woodCanvas = null, woodKey = '';
 function resize() {
   const r = cv.parentElement.getBoundingClientRect();
   const dpr = Math.min(2.5, window.devicePixelRatio || 1);
-  view.w = r.width; view.h = r.height; view.dpr = dpr;
-  cv.width = Math.max(1, Math.round(r.width * dpr));
-  cv.height = Math.max(1, Math.round(r.height * dpr));
-  view.portrait = r.height > r.width * 1.15;
+  /* a window short enough to leave the stage with no height at all would
+     otherwise give a zero sized canvas, and drawing one throws every frame */
+  view.w = Math.max(120, r.width); view.h = Math.max(90, r.height);
+  view.dpr = dpr;
+  cv.width = Math.max(1, Math.round(view.w * dpr));
+  cv.height = Math.max(1, Math.round(view.h * dpr));
+  view.portrait = view.h > view.w * 1.15;
   view.BW = view.portrait ? r.height : r.width;
   view.BH = view.portrait ? r.width : r.height;
   woodCanvas = null;
@@ -1800,8 +1868,10 @@ function drawStrings(g) {
   }
 }
 
+let dotFont = '';
 function drawFingers(g) {
   const c = state.chord;
+  if (!dotFont) dotFont = getComputedStyle(document.body).fontFamily;
   const r = Math.min(L.gap * 0.42, 13);
   for (let s = 0; s < 6; s++) {
     const y = stringY(s);
@@ -1833,7 +1903,7 @@ function drawFingers(g) {
     g.strokeStyle = 'rgba(46,30,8,.55)'; g.lineWidth = 1; g.stroke();
     if (fing > 0 && r > 7.5) {
       g.fillStyle = 'rgba(38,25,8,.88)';
-      g.font = `600 ${Math.round(r * 1.02)}px ${getComputedStyle(document.body).fontFamily}`;
+      g.font = `600 ${Math.round(r * 1.02)}px ${dotFont}`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(String(fing), x, y + 0.5);
     }
@@ -1913,7 +1983,9 @@ let rafId = 0;
 function frame() {
   rafId = requestAnimationFrame(frame);
   pollPad();
+  if (!(view.BW > 4 && view.BH > 4 && L.gap > 0.5)) return;
   buildWood();
+  if (!woodCanvas || !woodCanvas.width || !woodCanvas.height) return;
   const g = ctx2, d = view.dpr;
   g.setTransform(d, 0, 0, d, 0, 0);
   g.clearRect(0, 0, view.w, view.h);
@@ -2181,7 +2253,12 @@ function onParam(key) {
     case 'bass': n.bass.gain.setTargetAtTime((p.bass - 0.5) * 22, T, S); break;
     case 'mid': n.mid.gain.setTargetAtTime((p.mid - 0.5) * 18, T, S); break;
     case 'treble': n.treble.gain.setTargetAtTime((p.treble - 0.5) * 20, T, S); break;
-    case 'level': n.master.gain.setTargetAtTime(lerp(0.12, 1.7, p.level), T, S); break;
+    case 'level': {
+      const v = lerp(0.12, 1.7, p.level);
+      n.master.gain.setTargetAtTime(v, T, S);
+      n.recGain.gain.setTargetAtTime(v, T, S);
+      break;
+    }
     case 'chorus':
       n.chorusWet.gain.setTargetAtTime(p.chorus * 0.85, T, S);
       n.chorusDry.gain.setTargetAtTime(1 - p.chorus * 0.28, T, S);
@@ -2425,16 +2502,22 @@ function recStop() {
 /* runs when the worklet confirms it has sent everything it had */
 function finalizeTake() {
   tape.finalizing = false;
+  const wasDub = tape.dub;
+  /* clear the overdub flag before anything can return early, or a take that
+     was stopped too fast leaves it stuck and the next plain Record silently
+     layers onto the old one instead of replacing it */
+  tape.dub = false;
+  $('dubBtn').classList.remove('on');
   const ctx = audio.ctx;
   const n = tape.frames;
-  if (n < 512) { tape.chunks = []; return; }
+  if (n < 512) { tape.chunks = []; tapeUI(); return; }
   const take = ctx.createBuffer(2, n, ctx.sampleRate);
   const l = take.getChannelData(0), r = take.getChannelData(1);
   let off = 0;
   for (const c of tape.chunks) { l.set(c.l, off); r.set(c.r, off); off += c.l.length; }
   tape.chunks = [];
 
-  if (tape.dub && tape.buf) {
+  if (wasDub && tape.buf) {
     /* Overdub. The take comes back later than it went out by the round trip
        through the graph, so slide it back or the layers walk apart. */
     const lag = Math.round((ctx.outputLatency || ctx.baseLatency || 0) * ctx.sampleRate);
@@ -2450,8 +2533,6 @@ function finalizeTake() {
   } else {
     tape.buf = take;
   }
-  tape.dub = false;
-  $('dubBtn').classList.remove('on');
   tapeUI();
 }
 
@@ -2542,7 +2623,9 @@ document.addEventListener('change', (e) => {
 });
 document.addEventListener('click', (e) => {
   if (e.detail === 0) return;              // came from the keyboard, leave it
-  const el = e.target.closest && e.target.closest('button, select, .slot, .cbtn');
+  /* deliberately not selects: blurring one on click shuts the dropdown
+     before anything can be picked out of it. They release on change. */
+  const el = e.target.closest && e.target.closest('button, .slot, .cbtn');
   if (el && !el.closest('.sheet')) releaseFocus(el);
 });
 document.addEventListener('pointerup', (e) => {

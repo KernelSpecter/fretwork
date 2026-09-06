@@ -232,6 +232,23 @@ for (const [what, how] of [
   check(`the number keys still play after using ${what}`, n === 1, `${n} plucks, focus on ${focus}`);
 }
 
+/* ---- 11b2. a dropdown must stay open long enough to use ---- */
+for (const id of ['#capoSel', '#tuneSel', '#instSel', '#irSel', '#tempoSel']) {
+  await page.locator(id).click();
+  await page.waitForTimeout(70);
+  const stillFocused = await page.evaluate((q) => document.activeElement === document.querySelector(q), id);
+  check(`${id} keeps focus when clicked, so its menu can stay open`, stillFocused,
+    stillFocused ? 'focused' : 'focus was stolen, the menu would shut instantly');
+  await page.keyboard.press('Escape');
+}
+/* and it must let go once a choice is made */
+await page.evaluate(() => document.activeElement && document.activeElement.blur());
+await page.selectOption('#capoSel', '2');
+await page.waitForTimeout(70);
+const releasedAfter = await page.evaluate(() => document.activeElement.tagName);
+check('a dropdown releases focus once a choice is made', releasedAfter !== 'SELECT', `focus on ${releasedAfter}`);
+await page.selectOption('#capoSel', '0');
+
 /* ---- 11c. space on a focused button must not do it twice ---- */
 {
   await page.locator('.slot').nth(0).click();

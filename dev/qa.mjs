@@ -293,6 +293,123 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
     `same length ${r.overdub.sameLength}, rms ${r.overdub.baseE} to ${r.overdub.dubE}`);
 }
 
+/* ---------- 5b. the capo, measured from the audio it produces ----------
+   Not "did a message go out" but "does the string that comes back out of
+   the tape actually sound two semitones higher". */
+{
+  const r = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((q) => setTimeout(q, ms));
+    /* period by autocorrelation over a steady stretch of the take */
+    const pitch = (d, rate, expect) => {
+      const P = rate / expect;
+      const s0 = Math.round(rate * 0.12);
+      const win = Math.min(8192, Math.round(P * 8));
+      if (s0 + win + Math.ceil(P * 1.5) >= d.length) return null;
+      const corr = (l) => {
+        let n = 0, a = 0, b = 0;
+        for (let i = 0; i < win; i++) { const x = d[s0 + i], y = d[s0 + i + l]; n += x * y; a += x * x; b += y * y; }
+        const q = Math.sqrt(a * b);
+        return q < 1e-20 ? 0 : n / q;
+      };
+      let best = -1, bv = -2;
+      for (let l = Math.floor(P * 0.6); l <= Math.ceil(P * 1.5); l++) { const v = corr(l); if (v > bv) { bv = v; best = l; } }
+      if (bv < 0.3) return null;
+      const y0 = corr(best - 1), y2 = corr(best + 1);
+      const den = y0 - 2 * bv + y2;
+      const f = Math.abs(den) < 1e-12 ? 0 : 0.5 * (y0 - y2) / den;
+      return rate / (best + Math.max(-1, Math.min(1, f)));
+    };
+
+    const out = [];
+    for (const capo of [0, 2, 5]) {
+      document.getElementById('clearBtn').click();
+      post({ t: 'silence' });
+      await sleep(120);
+      setCapo(capo);
+      await sleep(120);
+      recStart();
+      await sleep(40);
+      pluck(0, 0, 0.95);            // open low E, whatever the capo says that is
+      await sleep(1400);
+      recStop();
+      await sleep(450);
+      const want = 82.407 * Math.pow(2, capo / 12);
+      const got = tape.buf ? pitch(tape.buf.getChannelData(0), tape.buf.sampleRate, want) : null;
+      out.push({ capo, want: +want.toFixed(2), got: got ? +got.toFixed(2) : null,
+                 cents: got ? +(1200 * Math.log2(got / want)).toFixed(1) : null });
+    }
+    setCapo(0);
+    document.getElementById('clearBtn').click();
+    return out;
+  });
+  const ok = r.every((x) => x.got !== null && Math.abs(x.cents) < 15);
+  check('the capo moves the pitch you actually hear',
+    ok, r.map((x) => `capo ${x.capo}: ${x.got} Hz against ${x.want} (${x.cents} cents)`).join(', '));
+}
+
+/* ---------- 5c. what gets recorded matches what you heard ---------- */
+{
+  const r = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((q) => setTimeout(q, ms));
+    const takePeak = async () => {
+      document.getElementById('clearBtn').click();
+      post({ t: 'silence' });
+      await sleep(150);
+      recStart();
+      for (let i = 0; i < 3; i++) { strum(1, 0.9); await sleep(280); }
+      recStop(); await sleep(450);
+      const d = tape.buf.getChannelData(0);
+      let pk = 0, over = 0;
+      for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > pk) pk = a; if (a >= 0.999) over++; }
+      return { pk: +pk.toFixed(3), over };
+    };
+    p.level = 0.2; onParam('level'); paintKnob('level');
+    const quiet = await takePeak();
+    p.level = 1.0; onParam('level'); paintKnob('level');
+    const loud = await takePeak();
+
+    /* now push everything and make sure the export cannot clip */
+    Object.assign(p, { drive: 1, level: 1, delay: 1, fbk: 1, room: 1, chorus: 1, body: 1, bass: 1, treble: 1, mid: 1 });
+    for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
+    const hot = await takePeak();
+
+    Object.assign(p, DEFAULTS);
+    for (const k of Object.keys(p)) { paintKnob(k); onParam(k); }
+    document.getElementById('clearBtn').click();
+    post({ t: 'silence' });
+    return { quiet, loud, hot };
+  });
+  check('the Level knob reaches the tape', r.loud.pk > r.quiet.pk * 1.8,
+    `peak ${r.quiet.pk} at low level against ${r.loud.pk} at full`);
+  check('an export cannot clip, however hard the knobs are pushed',
+    r.hot.pk <= 0.985 && r.hot.over === 0,
+    `worst recorded peak ${r.hot.pk}, ${r.hot.over} samples at full scale`);
+}
+
+/* ---------- 5d. an aborted overdub must not stay armed ---------- */
+{
+  const r = await page.evaluate(async () => {
+    const sleep = (ms) => new Promise((q) => setTimeout(q, ms));
+    document.getElementById('clearBtn').click();
+    recStart(); strum(1, 0.8); await sleep(400); recStop(); await sleep(450);
+    const baseLen = tape.buf.length;
+    /* start an overdub and abandon it immediately */
+    document.getElementById('dubBtn').click();
+    await sleep(5);
+    recStop();
+    await sleep(400);
+    const stuck = tape.dub || document.getElementById('dubBtn').classList.contains('on');
+    /* the next plain record must replace, not layer */
+    recStart(); strum(1, 0.8); await sleep(700); recStop(); await sleep(450);
+    playStop();
+    const replaced = tape.buf.length !== baseLen;
+    document.getElementById('clearBtn').click();
+    return { stuck, replaced, baseLen, now: tape.buf ? tape.buf.length : 0 };
+  });
+  check('an abandoned overdub does not stay armed and quietly layer the next take',
+    !r.stuck && r.replaced, `still armed ${r.stuck}, take replaced ${r.replaced}`);
+}
+
 /* ---------- 6. the sequencer under churn ---------- */
 {
   const r = await page.evaluate(async () => {
@@ -336,7 +453,8 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
 /* ---------- 7. resize, including sizes nobody should use ---------- */
 {
   await clearWorst();
-  const sizes = [[320, 480], [412, 900], [768, 1024], [2560, 700], [1024, 300], [1440, 860]];
+  const sizes = [[320, 480], [412, 900], [768, 1024], [2560, 700], [1024, 300],
+                 [200, 200], [360, 260], [1440, 860]];
   const bad = [];
   for (const [w, h] of sizes) {
     await page.setViewportSize({ width: w, height: h });
