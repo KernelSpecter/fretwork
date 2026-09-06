@@ -77,14 +77,14 @@ before the reload, and leaves zero with zero slope on the way back up. A
 re-pluck ends up no sharper an attack than a fresh one.
 
 The body is a parallel bank of bandpass filters standing in for the air and
-top and back plate modes of the actual instrument, cheaper than a convolution
-and adjustable in real time by the Body knob, with two banks tuned slightly
-apart making the stereo width. Pickup position is modeled as a feedforward
-comb filter that subtracts a delayed copy of the string signal, the delay set
-by where the pickup sits along the string: a real pickup only reads the
-string's motion at one fixed point, so it cancels whatever harmonic has a
-node there, which is most of what makes an electric guitar sound like the
-position of its pickup rather than like a generic string.
+top and back plate modes, cheaper than a convolution and adjustable in real
+time by the Body knob, with two banks tuned slightly apart making the stereo
+width. Pickup position is modeled as a feedforward comb filter that subtracts
+a delayed copy of the string signal, the delay set by where the pickup sits
+along the string: a real pickup only reads the string's motion at one fixed
+point, so it cancels whatever harmonic has a node there, which is most of
+what makes an electric guitar sound like its pickup position rather than
+like a generic string.
 
 ## The reference data
 

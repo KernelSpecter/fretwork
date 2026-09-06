@@ -173,11 +173,14 @@ select:focus-visible,.btn:focus-visible{outline:1px solid var(--lamp);outline-of
 .sheet h2{margin:0 0 3px;font-size:12px;letter-spacing:.24em;text-transform:uppercase;color:#b3a691;font-weight:600}
 .sheet .sub{color:var(--ink-faint);font-size:11px;margin-bottom:14px}
 .close{position:absolute;top:14px;right:16px}
-#chordGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:6px}
-.cbtn{padding:6px 3px;text-align:center;background:linear-gradient(#221e19,#181511);
-  border:1px solid #0a0908;border-radius:3px;cursor:pointer;font-size:12px;color:#cdc2ab}
+#chordGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:6px}
+.cbtn{padding:5px 3px 4px;text-align:center;background:linear-gradient(#221e19,#181511);
+  border:1px solid #0a0908;border-radius:3px;cursor:pointer;color:#cdc2ab;
+  display:flex;flex-direction:column;align-items:center;gap:1px}
 .cbtn:hover{background:linear-gradient(#2c271f,#1e1a16);color:#eee2c8}
-.cbtn small{display:block;font-size:8.5px;color:var(--ink-faint);letter-spacing:.06em;margin-top:1px}
+.cbtn .cn{font-size:12.5px;font-weight:600;line-height:1.15}
+.cbtn canvas{display:block}
+.cbtn small{font-size:8px;color:var(--ink-faint);letter-spacing:.06em}
 .keys{display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:12px;align-items:baseline}
 .keys kbd{font-family:var(--mono);font-size:10.5px;background:#241f19;border:1px solid #0a0908;
   border-bottom-width:2px;border-radius:3px;padding:2px 6px;color:#d6cbb3;white-space:nowrap}
@@ -1599,15 +1602,6 @@ function drawNeck(g, BW, cy, inst) {
   g.beginPath();
   g.moveTo(x0, botY(x0) + 2.4); for (let x = x0; x <= x1; x += 8) g.lineTo(x, botY(x) + 2.4); g.stroke();
 
-  /* fret numbers, off the board so they never fight the strings */
-  g.font = '500 10px ui-monospace, monospace';
-  g.textAlign = 'center'; g.textBaseline = 'top';
-  for (let n = 1; n <= L.frets; n++) {
-    if (!dots.includes(n) && n !== 12 && n !== 24) continue;
-    const cx = (fretX(n - 1) + fretX(n)) / 2;
-    g.fillStyle = n === 12 ? 'rgba(217,164,65,.6)' : 'rgba(196,182,152,.34)';
-    g.fillText(String(n), cx, botY(cx) + 8);
-  }
 }
 
 function inlay(g, x, y, r) {
@@ -1755,7 +1749,7 @@ function drawStrings(g) {
         g.lineTo(x, y + Math.sin(t * Math.PI) * swing);
       }
       g.closePath();
-      g.fillStyle = `rgba(240,232,210,${0.045 + a * 0.12})`;
+      g.fillStyle = `rgba(240,232,210,${0.02 + a * 0.06})`;
       g.fill();
     }
 
@@ -1871,6 +1865,35 @@ function drawStrumZone(g) {
   g.setLineDash([]);
 }
 
+/* Anything with words in it has to be drawn after the board image, not
+   baked into it, because in portrait the board is rotated a quarter turn
+   and text baked in would come out on its side. */
+function boardToScreen(bx, by) {
+  return view.portrait ? { x: view.BH - by, y: bx } : { x: bx, y: by };
+}
+function upright(g, str, bx, by, align, color, font) {
+  const q = boardToScreen(bx, by);
+  g.save();
+  g.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  g.font = font || '500 10px ui-monospace, monospace';
+  g.fillStyle = color;
+  g.textAlign = align; g.textBaseline = 'middle';
+  g.fillText(str, q.x, q.y);
+  g.restore();
+}
+
+const MARKED = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24];
+function drawFretNumbers(g) {
+  const off = L.gap * 1.5;
+  for (const n of MARKED) {
+    if (n > L.frets) break;
+    const cx = (fretX(n - 1) + fretX(n)) / 2;
+    upright(g, String(n), cx, L.cy + boardHalf(cx) + off,
+      view.portrait ? 'center' : 'center',
+      n === 12 ? 'rgba(217,164,65,.62)' : 'rgba(196,182,152,.34)');
+  }
+}
+
 /* What each open string is tuned to, which is the thing you actually want
    to know when the tuning or the capo moves. */
 let nameCache = { key: '', names: [] };
@@ -1880,11 +1903,9 @@ function drawStringNames(g) {
     nameCache = { key, names: openFreqs().map((f) => noteName(f).replace(/\d$/, '')) };
   }
   const open = nameCache.names;
-  g.font = '500 10px ui-monospace, monospace';
-  g.textAlign = 'right'; g.textBaseline = 'middle';
   for (let s = 0; s < 6; s++) {
-    g.fillStyle = 'rgba(200,186,152,.5)';
-    g.fillText(open[s], L.nutX - 30, stringY(s) + 0.5);
+    upright(g, open[s], L.nutX - 26, stringY(s),
+      view.portrait ? 'center' : 'right', 'rgba(200,186,152,.5)');
   }
 }
 
@@ -1903,6 +1924,7 @@ function frame() {
   drawStrings(g);
   drawFingers(g);
   drawStringNames(g);
+  drawFretNumbers(g);
 
   const lg = g.createRadialGradient(view.BW * 0.38, L.cy - L.span * 0.3, L.span * 0.4,
                                     view.BW * 0.44, L.cy, view.BW * 0.8);
@@ -2293,7 +2315,13 @@ function buildChordGrid() {
   for (const c of list) {
     const b = document.createElement('button');
     b.className = 'cbtn';
-    b.innerHTML = `${c.name}<small>${c.shape || (c.barre ? 'barre ' + c.barre : '&nbsp;')}</small>`;
+    const nm = document.createElement('span');
+    nm.className = 'cn'; nm.textContent = c.name;
+    b.appendChild(nm);
+    b.appendChild(miniDiagram(c, 62, 38));
+    const sub = document.createElement('small');
+    sub.textContent = c.shape || (c.barre ? 'barre ' + c.barre : ' ');
+    b.appendChild(sub);
     b.onclick = async () => {
       state.slots[state.litSlot] = c;
       state.litSlot = (state.litSlot + 1) % 8;
