@@ -169,6 +169,25 @@ bar. So all four positions are tried and the one the harmony agrees with is
 kept, because a bar line in the right place makes every chord in it fit better
 at once.
 
+It picks out the tune as well as the chords, because that is the thing a song
+is recognised by. A guitar strumming two chords for eighty seconds sounds like
+a guitar strumming two chords, however right the chart is. So one line at a
+time, which is the tractable version of the problem: for every frame, which
+single pitch best explains the peaks that are there, summed over its own
+harmonics. Frames get tidied into notes, snapped to the sixteenth grid the
+tempo already found, and handed to the same pass that lays out a MIDI file,
+because putting notes on a neck is the same problem either way. `Tune` turns
+it off and leaves the chords, which drop to a sparser strum when there is a
+melody over them.
+
+Two things that matter in a pitch tracker. An octave down explains the same
+peaks as the note itself, and a tune that drops an octave at random stops
+being the tune, so among candidates that fit almost as well the highest wins:
+a melody is nearly always the top line. And the voiced/unvoiced decision has
+to be an absolute figure, not a percentile — a percentile discards a fixed
+share of every recording however much of it is singing, and at the 55th it
+lost nearly half the notes of a plain monophonic line.
+
 **A MIDI file** — every note, where the file put it. A MIDI file says which
 notes and when, never where on the neck, and that is the whole problem: each
 pitch can be played in up to six places, a string sounds one note at a time,

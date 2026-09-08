@@ -928,6 +928,7 @@ registerProcessor('fretwork-tape', TapeProcessor);
           <button class="btn mini" id="songBtn" disabled>Play</button>
           <button class="btn mini" id="chartBtn" disabled>Chart</button>
           <button class="btn mini on" id="fingersBtn">Fingers</button>
+          <button class="btn mini on" id="melodyBtn">Tune</button>
           <input type="file" id="songFile" accept=".mid,.midi,.txt,.chopro,.cho,.mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm,text/plain,audio/*"
                  style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
         </div>
@@ -1611,25 +1612,15 @@ const IMPORTER = (() => {
 
   /* ---------------------------------------------------------------- import */
 
-  function fromMidi(buffer, name) {
-    const mid = parseMidi(buffer);
-    const at = secondsOf(mid);
-    const bpm = Math.max(30, Math.min(300, Math.round((mid.tempos[0] && mid.tempos[0].bpm) || 120)));
-
-    /* seconds, then beats at that one tempo, so a tempo change inside the
-       file survives the conversion instead of being flattened */
-    const timed = mid.notes.map((n) => ({
-      t: at(n.tick),
-      d: Math.max(0.04, at(n.tick + n.dur) - at(n.tick)),
-      pitch: n.pitch,
-      vel: n.vel / 127,
-    })).sort((a, b) => a.t - b.t || a.pitch - b.pitch);
-
-    const { shift, lost } = bestShift(timed);
-    const laid = assign(timed, shift, 0.03);
+  /* Notes with a time and a pitch, turned into notes with a place on the neck
+     and a hand holding them. Shared: a MIDI file arrives like this, and so
+     does a tune picked out of a recording. */
+  function layOut(timed, bpm, beatsPerBar) {
+    const sorted = timed.slice().sort((a, b) => a.t - b.t || a.pitch - b.pitch);
+    const { shift, lost } = bestShift(sorted);
+    const laid = assign(sorted, shift, 0.03);
 
     const beats = (sec) => (sec * bpm) / 60;
-    const beatsPerBar = mid.timeSig.num * (4 / mid.timeSig.den);
     const held = [-1, -1, -1, -1, -1, -1];
     const until = [0, 0, 0, 0, 0, 0];
     const events = [];
@@ -1652,6 +1643,28 @@ const IMPORTER = (() => {
         note: noteName(n.pitch),
       });
     }
+    return { events: events, shift: shift, lost: lost, dropped: laid.dropped, stolen: laid.stolen, notes: laid.notes };
+  }
+
+  function fromMidi(buffer, name) {
+    const mid = parseMidi(buffer);
+    const at = secondsOf(mid);
+    const bpm = Math.max(30, Math.min(300, Math.round((mid.tempos[0] && mid.tempos[0].bpm) || 120)));
+
+    /* seconds, then beats at that one tempo, so a tempo change inside the
+       file survives the conversion instead of being flattened */
+    const timed = mid.notes.map((n) => ({
+      t: at(n.tick),
+      d: Math.max(0.04, at(n.tick + n.dur) - at(n.tick)),
+      pitch: n.pitch,
+      vel: n.vel / 127,
+    }));
+
+    const beatsPerBar = mid.timeSig.num * (4 / mid.timeSig.den);
+    const out = layOut(timed, bpm, beatsPerBar);
+    const events = out.events;
+    const laid = { notes: out.notes, dropped: out.dropped, stolen: out.stolen };
+    const shift = out.shift, lost = out.lost;
 
     const barCount = events.length ? events[events.length - 1].bar + 1 : 0;
     const bars = [];
@@ -1732,6 +1745,7 @@ const IMPORTER = (() => {
     parseMidi: parseMidi, secondsOf: secondsOf, parseChart: parseChart,
     fromMidi: fromMidi, fromChart: fromChart,
     places: places, assign: assign, bestShift: bestShift, fingersFor: fingersFor,
+    layOut: layOut,
     noteName: noteName, OPEN: OPEN, MAX_FRET: MAX_FRET, HAND_SPAN: HAND_SPAN,
   };
 })();
@@ -1962,7 +1976,32 @@ const LISTENER = (() => {
   /* Fold the spectrum onto twelve pitch classes. Each semitone gets a
      triangular window a semitone wide, so a bin between two notes is shared
      rather than being assigned to whichever it is nearer. */
-  function chromagram(spec, loHz, hiHz) {
+  /* A harmonic is a peak standing above the noise around it, and only the part
+     standing above counts. Shared by the chroma fold and the melody tracker,
+     because both want peaks and neither wants the wash between them. */
+  function whiten(spec) {
+    const W = 24;
+    const out = [];
+    for (let f = 0; f < spec.frames; f++) {
+      const mag = spec.mag[f];
+      const row = new Float32Array(spec.bins);
+      let sum = 0;
+      for (let k = 0; k < Math.min(W, spec.bins); k++) sum += mag[k];
+      let lo = 0, hi = Math.min(W, spec.bins) - 1;
+      for (let k = 0; k < spec.bins; k++) {
+        const want0 = Math.max(0, k - W), want1 = Math.min(spec.bins - 1, k + W);
+        while (hi < want1) { hi++; sum += mag[hi]; }
+        while (lo < want0) { sum -= mag[lo]; lo++; }
+        const bg = sum / Math.max(1, hi - lo + 1);
+        const above = mag[k] - bg;
+        row[k] = above > 0 ? above : 0;
+      }
+      out.push(row);
+    }
+    return out;
+  }
+
+  function chromagram(spec, loHz, hiHz, pre) {
     const LO_MIDI = 33;                    // A1, below the guitar's low E
     const HI_MIDI = 96;                    // C7
     const lo = loHz || 50;
@@ -1984,41 +2023,148 @@ const LISTENER = (() => {
       map.push({ pc: ((near % 12) + 12) % 12, w: w * oct });
     }
 
-    /* How wide a neighbourhood counts as "the background here". About 130Hz
-       at this resolution: wide enough to sit under a harmonic peak, narrow
-       enough to follow the shape of the mix. */
-    const W = 24;
+    const white = pre || whiten(spec);
 
     for (let f = 0; f < spec.frames; f++) {
       const row = new Float32Array(12);
-      const mag = spec.mag[f];
-
-      /* Whitening. A harmonic is a peak standing above the noise around it,
-         and only the part standing above counts. Compressing the raw
-         magnitude instead, as this did with a log, lifts the floor until the
-         bleed and the reverb between the notes contribute nearly as much as
-         the notes, which is what flattened the chroma on a real mix. */
-      let sum = 0;
-      for (let k = 0; k < Math.min(W, spec.bins); k++) sum += mag[k];
-      let lo2 = 0, hi2 = Math.min(W, spec.bins) - 1;
-
+      const mag = white[f];
       for (let k = 1; k < spec.bins; k++) {
-        /* slide the window that measures the background */
-        const want0 = Math.max(0, k - W), want1 = Math.min(spec.bins - 1, k + W);
-        while (hi2 < want1) { hi2++; sum += mag[hi2]; }
-        while (lo2 < want0) { sum -= mag[lo2]; lo2++; }
-        const bg = sum / Math.max(1, hi2 - lo2 + 1);
-
         const m = map[k - 1];
         if (!m || !m.w) continue;
-        const above = mag[k] - bg;
-        if (above <= 0) continue;
+        if (mag[k] <= 0) continue;
         /* a mild compression, so one loud note cannot own the whole bar */
-        row[m.pc] += Math.sqrt(above) * m.w;
+        row[m.pc] += Math.sqrt(mag[k]) * m.w;
       }
       out.push(row);
     }
     return out;
+  }
+
+  /* ---------------------------------------------------------------- melody */
+
+  /* The chords are the harmony under a song. They are not the thing you
+     recognise it by, and a guitar strumming two of them for eighty seconds
+     sounds like a guitar strumming two chords, whatever the chart says. The
+     tune is the melody, so this goes and finds it.
+
+     One line at a time, which is the tractable version of the problem: for
+     every frame, which single pitch best explains the peaks that are there,
+     summed over its own harmonics. Then the frames get tidied into notes. */
+
+  const MEL_LO = 52;           // E3, an octave up from the guitar's low string
+  const MEL_HI = 88;           // E6, above which almost nothing is a tune
+  const MEL_HARMONICS = 6;
+
+  function melody(spec, white, fps) {
+    const binFreq = RATE / FRAME;
+    const track = [];
+
+    /* one candidate per semitone, plus the two quarter tones either side, so
+       a slightly flat recording is not read as the note below */
+    const cands = [];
+    for (let m = MEL_LO; m <= MEL_HI; m += 0.5) {
+      const f0 = 440 * Math.pow(2, (m - 69) / 12);
+      const bins = [];
+      for (let h = 1; h <= MEL_HARMONICS; h++) {
+        const k = Math.round((f0 * h) / binFreq);
+        if (k > 0 && k < spec.bins) bins.push({ k: k, w: 1 / Math.pow(h, 0.7) });
+      }
+      cands.push({ midi: m, bins: bins, f0: f0 });
+    }
+
+    for (let f = 0; f < spec.frames; f++) {
+      const mag = white[f];
+      let total = 0;
+      for (let k = 1; k < spec.bins; k++) total += mag[k];
+
+      let best = null;
+      for (const c of cands) {
+        let sal = 0;
+        for (const b of c.bins) sal += b.w * mag[b.k];
+        if (!best || sal > best.sal) best = { midi: c.midi, sal: sal };
+      }
+      if (!best || total <= 0) { track.push({ midi: 0, strength: 0 }); continue; }
+
+      /* An octave down explains the same peaks as an octave up, and the tune
+         is nearly always the top line, so among candidates that fit almost as
+         well as the winner, take the highest. Without this a melody drops an
+         octave at random and stops being the melody. */
+      const floorSal = best.sal * 0.86;
+      let top = best;
+      for (const c of cands) {
+        if (c.midi <= top.midi) continue;
+        let sal = 0;
+        for (const b of c.bins) sal += b.w * mag[b.k];
+        if (sal >= floorSal) top = { midi: c.midi, sal: sal };
+      }
+      track.push({ midi: top.midi, strength: top.sal / total });
+    }
+
+    /* A median over five frames, in pitch. A single frame that disagrees with
+       both its neighbours is an artefact, and taking the middle value throws
+       it away without smearing the real steps into ramps the way a mean
+       would. */
+    const smooth = track.slice();
+    for (let f = 2; f < track.length - 2; f++) {
+      const five = [track[f - 2].midi, track[f - 1].midi, track[f].midi, track[f + 1].midi, track[f + 2].midi];
+      five.sort((a, b) => a - b);
+      smooth[f] = { midi: five[2], strength: track[f].strength };
+    }
+
+    /* Voiced where the winning pitch explains enough of the frame to be a
+       note rather than the loudest thing in a cymbal. An absolute figure,
+       because strength is already the share of the frame's energy that this
+       one pitch and its harmonics account for. A percentile was used here
+       first, which threw away a fixed fraction of every recording however
+       much of it was singing: at the 55th, nearly half the notes of a plain
+       monophonic line went missing. */
+    const nonzero = smooth.map((t) => t.strength).filter((v) => v > 0).sort((a, b) => a - b);
+    const mid = nonzero.length ? nonzero[Math.floor(nonzero.length / 2)] : 0;
+    /* About half of what a typical frame manages, held between a floor and a
+       ceiling. The bounds are what stop this being a percentile again: a
+       recording where nothing is very clear gets a lower bar rather than
+       having a fixed share of itself discarded, and one where everything is
+       clear does not get a bar so high that the quiet notes fall under it. */
+    const gate = Math.max(0.05, Math.min(0.12, 0.5 * mid));
+
+    /* runs of one pitch become notes */
+    const notes = [];
+    let run = null;
+    const minFrames = Math.max(2, Math.round(fps * 0.07));
+    for (let f = 0; f < smooth.length; f++) {
+      const t = smooth[f];
+      const voiced = t.strength >= gate && t.midi >= MEL_LO;
+      const pitch = Math.round(t.midi);
+      if (run && voiced && pitch === run.pitch) { run.to = f; continue; }
+      if (run) {
+        if (run.to - run.from + 1 >= minFrames) {
+          notes.push({
+            t: run.from / fps,
+            d: Math.max(0.08, (run.to - run.from + 1) / fps),
+            pitch: run.pitch,
+            vel: Math.min(1, 0.35 + run.peak * 6),
+          });
+        }
+        run = null;
+      }
+      if (voiced) run = { from: f, to: f, pitch: pitch, peak: t.strength };
+      else if (run) run.peak = Math.max(run.peak, t.strength);
+    }
+    if (run && run.to - run.from + 1 >= minFrames) {
+      notes.push({ t: run.from / fps, d: Math.max(0.08, (run.to - run.from + 1) / fps), pitch: run.pitch, vel: 0.6 });
+    }
+    return notes;
+  }
+
+  /* Snap to the sixteenth note grid the tempo already found. A tune played
+     dead on the grid is wrong in a way nobody minds; a tune a semiquaver out
+     of step with its own accompaniment is unlistenable. */
+  function quantise(notes, phase, beat) {
+    const step = beat / 4;
+    return notes.map((n) => {
+      const at = phase + Math.round((n.t - phase) / step) * step;
+      return { t: Math.max(0, at), d: Math.max(step * 0.9, Math.round(n.d / step) * step), pitch: n.pitch, vel: n.vel };
+    }).filter((n, i, all) => i === 0 || n.t > all[i - 1].t + 1e-6);
   }
 
   /* ---------------------------------------------------------------- chords */
@@ -2230,12 +2376,13 @@ const LISTENER = (() => {
     if (seconds < 2) throw new Error('too short to find a tempo in');
 
     const spec = spectrogram(x);
+    const white = whiten(spec);
     const env = onsetStrength(spec);
     const tempo = findTempo(env, spec.fps);
     const phase = findPhase(env, tempo.lag, spec.fps);
-    const chroma = chromagram(spec);
-    /* the same fold again but only under 260Hz, which is the bass */
-    const bassChroma = chromagram(spec, 38, 300);
+    const chroma = chromagram(spec, 0, 0, white);
+    /* the same fold again but only under 300Hz, which is the bass */
+    const bassChroma = chromagram(spec, 38, 300, white);
     const key = findKey([finish(rawAverage(chroma))]);
 
     /* black notes get spelled the way the key spells them */
@@ -2284,6 +2431,18 @@ const LISTENER = (() => {
     const chords = aligned.chords;
     const find = shapeFinder(ref, o.maxFret);
 
+    /* The tune, which is the thing a song is recognised by. Pitches and times
+       only: turning them into places on the neck is the importer's job and it
+       already knows how, so it is not done twice. */
+    /* The bars start at the downbeat this found, not at the start of the file,
+       and the arranger counts beats from bar one. So the tune is moved onto
+       that same origin here rather than being nudged into place later: a tune
+       a beat out of step with its own accompaniment is unlistenable, and it
+       would be a silent kind of wrong. */
+    const tune = (o.melody === false ? [] : quantise(melody(spec, white, spec.fps), phase, beat))
+      .map((n) => ({ t: n.t - firstBar, d: n.d, pitch: n.pitch, vel: n.vel }))
+      .filter((n) => n.t >= -1e-6);
+
     /* how busy the record is decides what it gets strummed with */
     const perBar = mean(Array.from(env)) * spec.fps * beat;
     /* No X slots: a muted chuck is a stylistic decision, not something that
@@ -2291,7 +2450,11 @@ const LISTENER = (() => {
        turns every dense mix into a percussion part. */
     const pool = ref.strumPatterns.filter((p) => p.feel === 'straight' && !p.slots.includes('X'));
     pool.sort((a, b) => a.slots.filter((s) => s !== '-').length - b.slots.filter((s) => s !== '-').length);
-    const pat = pool[Math.min(pool.length - 1, Math.max(0, Math.round(perBar * 2)))] || ref.strumPatterns[0];
+    /* With a tune over the top the chords are accompaniment and get out of
+       its way; on their own they are the whole arrangement and can be busier. */
+    const pat = tune.length
+      ? pool[0]
+      : (pool[Math.min(pool.length - 1, Math.max(0, Math.round(perBar * 2)))] || ref.strumPatterns[0]);
 
     let unplayable = 0;
     const bars = chords.map((c, b) => {
@@ -2319,7 +2482,12 @@ const LISTENER = (() => {
       kind: 'audio',
       title: '',
       source: '',
-      tempo: Math.round(tempo.bpm),
+      /* The precise tempo, not a rounded one. The tune is snapped to a grid
+         built from this, and it is laid out again against whatever comes back
+         here; 117 against 117.5 is a third of a second of drift across a
+         track, which is a sixteenth note out of step by the end. Rounding is
+         for showing a person, and happens where it is shown. */
+      tempo: tempo.bpm,
       feel: pat.feel,
       beatsPerBar: beatsPerBar,
       barCount: bars.length,
@@ -2328,6 +2496,8 @@ const LISTENER = (() => {
       keyConfidence: key.score,
       tempoConfidence: tempo.confidence,
       confidence: conf,
+      melody: tune,
+      beat: beat,
       offset: firstBar,
       beatOffset: aligned.beatOffset,
       seconds: seconds,
@@ -2344,7 +2514,9 @@ const LISTENER = (() => {
     listen: listen, condition: condition, spectrogram: spectrogram,
     onsetStrength: onsetStrength, findTempo: findTempo, findPhase: findPhase,
     chromagram: chromagram, chordTrack: chordTrack, findKey: findKey,
-    finish: finish, rawAverage: rawAverage,
+    finish: finish, rawAverage: rawAverage, whiten: whiten,
+    melody: melody, quantise: quantise,
+    MEL_LO: MEL_LO, MEL_HI: MEL_HI,
     scoreChord: scoreChord, shapeFinder: shapeFinder, fft: fft,
     RATE: RATE, FRAME: FRAME, HOP: HOP, TEMPLATES: TEMPLATES,
     NAMES_SHARP: NAMES_SHARP, NAMES_FLAT: NAMES_FLAT,
@@ -2398,6 +2570,8 @@ const state = {
      importer derives one and puts it here. */
   fingers: null,
   showFingers: true,
+  /* whether a tune picked out of a recording plays over its chords */
+  wantMelody: true,
   tempo: 96,
   pattern: REF.strumPatterns[0],
   auto: false,
@@ -4169,8 +4343,10 @@ function compose(seed) {
   const moved = standardise();
 
   song.data = data;
-  song.ev = built.events;
+  song.chordEv = built.events;
+  song.melEv = [];
   song.endBeat = built.endBeat;
+  mixSong();
   song.note = moved ? 'standard tuning' : '';
 
   state.tempo = data.tempo;
@@ -4219,7 +4395,29 @@ async function loadSong(file) {
       heard.title = name.replace(/\.[^.]+$/, '');
       heard.source = name;
       heard.clipped = decoded.length > keep;
-      out = Object.assign({ data: heard }, ARRANGER.compile(heard));
+
+      /* the chords, strummed */
+      const strummed = ARRANGER.compile(heard);
+      /* and the tune, picked, put on the neck by the same pass that lays out
+         a MIDI file, because it is the same problem */
+      const laid = heard.melody.length
+        ? IMPORTER.layOut(heard.melody, heard.tempo, heard.beatsPerBar)
+        : { events: [], shift: 0, dropped: 0 };
+
+      heard.handFromNotes = laid.events.length > 0;
+      heard.melodyNotes = laid.events.length;
+      heard.melodyShift = laid.shift;
+      heard.melodyDropped = laid.dropped;
+
+      out = {
+        data: heard,
+        events: strummed.events,
+        melodyEvents: laid.events,
+        endBeat: Math.max(
+          strummed.endBeat,
+          laid.events.length ? laid.events[laid.events.length - 1].beat + 4 : 0
+        ),
+      };
     } else if (midi) {
       out = IMPORTER.fromMidi(new Uint8Array(await file.arrayBuffer()), name);
     } else {
@@ -4230,8 +4428,10 @@ async function loadSong(file) {
     songStop();
     const moved = standardise();
     song.data = out.data;
-    song.ev = out.events;
+    song.chordEv = out.events || [];
+    song.melEv = out.melodyEvents || [];
     song.endBeat = out.endBeat;
+    mixSong();
 
     const d = out.data;
     state.tempo = d.tempo;
@@ -4246,6 +4446,7 @@ async function loadSong(file) {
     }
     if (d.kind === 'audio') {
       notes.push(`key of ${d.key}`);
+      if (d.melodyNotes) notes.push(`${d.melodyNotes} notes of tune`);
       notes.push(`${Math.round(d.confidence * 100)}% sure of the chords`);
       if (d.confidence < 0.45) notes.push('a dense mix, so treat the chart as a first guess');
       if (d.clipped) notes.push(`listened to the first ${LISTEN_MAX_SEC / 60} minutes`);
@@ -4270,6 +4471,15 @@ async function loadSong(file) {
     if (el) el.textContent = `Could not read ${name}: ${err.message}`;
     return null;
   }
+}
+
+/* Which of the two parts actually play. Both lists are kept, so turning the
+   tune off is instant rather than another minute of listening. */
+function mixSong() {
+  const chords = song.chordEv || [];
+  const mel = state.wantMelody ? (song.melEv || []) : [];
+  song.ev = chords.concat(mel).sort((a, b) => a.beat - b.beat);
+  if (song.data) song.data.handFromNotes = mel.length > 0;
 }
 
 async function songStart() {
@@ -4363,8 +4573,11 @@ function showBarAt(b, when) {
     if (!bar) return;
     song.bar = b;
     const c = CHORDS[bar.shape];
-    /* an imported file has no shape for a bar; its notes move the hand themselves */
-    if (c) setChord(c);
+    /* An imported file has no shape for a bar; its notes move the hand
+       themselves. So does a recording once a tune has been picked out of it:
+       the chords are accompaniment then, and the hand you want to watch is
+       the one playing the melody. */
+    if (c && !song.data.handFromNotes) setChord(c);
     songReadout();
     markChart(b);
   }, wait);
@@ -4380,7 +4593,7 @@ function songReadout() {
     el.textContent = `${bar.sectionName} · bar ${song.bar + 1} of ${d.barCount} · ${bar.chord}`;
     return;
   }
-  el.textContent = `${d.title} · ${d.tempo} bpm · ${songLength(d)}s`
+  el.textContent = `${d.title} · ${Math.round(d.tempo)} bpm · ${songLength(d)}s`
     + (song.note ? ' · ' + song.note : '');
   el.title = d.source ? 'from ' + d.source : '';
 }
@@ -4402,7 +4615,7 @@ function buildChart() {
         + 'and a paler cell is one it is less sure of.'
         : `Read off ${d.source}.`;
   $('chartSub').textContent =
-    `${d.tempo} bpm, ${d.feel}, ${d.barCount} bars, about ${songLength(d)} seconds. ${where}`
+    `${Math.round(d.tempo)} bpm, ${d.feel}, ${d.barCount} bars, about ${songLength(d)} seconds. ${where}`
     + (song.note ? ' ' + song.note[0].toUpperCase() + song.note.slice(1) + '.' : '');
 
   const counts = {};
@@ -4594,6 +4807,7 @@ const KEYHELP = [
   ['O', 'Open a recording, a MIDI file or a chord sheet, or drop one on the page'],
   ['N', 'Compose a new song'],
   ['F', 'Show or hide the fingering on the neck'],
+  ['T', 'Play the tune over the chords, or just the chords'],
   ['P', 'Play or stop the composed song'],
   ['L', 'Show its chart'],
   ['R', 'Record'],
@@ -4662,6 +4876,7 @@ window.addEventListener('keydown', async (e) => {
   if (k === 'l') { $('chartBtn').click(); return; }
   if (k === 'o') { $('loadBtn').click(); return; }
   if (k === 'f') { $('fingersBtn').click(); return; }
+  if (k === 't') { $('melodyBtn').click(); return; }
 });
 window.addEventListener('keyup', (e) => {
   const k = e.key.toLowerCase();
@@ -4803,6 +5018,15 @@ function init() {
     const f = e.target.files && e.target.files[0];
     if (f) loadSong(f);
     e.target.value = '';
+  };
+  $('melodyBtn').onclick = () => {
+    state.wantMelody = !state.wantMelody;
+    $('melodyBtn').classList.toggle('on', state.wantMelody);
+    const was = song.playing;
+    songStop();
+    mixSong();
+    if (was) songStart();
+    songReadout();
   };
   $('fingersBtn').onclick = () => {
     state.showFingers = !state.showFingers;

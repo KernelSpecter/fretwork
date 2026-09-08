@@ -97,6 +97,72 @@ function render(seq, bpm, opts) {
   return { channels: [buf], rate };
 }
 
+/* One note at a time, for the melody tracker. Same plucked tone as the chords
+   so the overtones are there to be confused by. */
+function renderLine(pitches, bpm, opts) {
+  const o = Object.assign({ rate: 44100, harmonics: 6, noise: 0, under: null }, opts || {});
+  const rate = o.rate;
+  const beat = 60 / bpm;
+  const n = Math.round((pitches.length + 1) * beat * rate);
+  const buf = new Float32Array(n);
+
+  pitches.forEach((midi, i) => {
+    const t0 = Math.round(i * beat * rate);
+    for (let k = 1; k <= o.harmonics; k++) {
+      const f = hz(midi) * k;
+      if (f > rate / 2.2) break;
+      const amp = 0.5 / k;
+      const len = Math.min(Math.round(beat * 0.92 * rate), n - t0);
+      for (let j = 0; j < len; j++) {
+        buf[t0 + j] += amp * Math.exp(-j / (rate * 0.3)) * Math.sin((2 * Math.PI * f * j) / rate);
+      }
+    }
+  });
+
+  /* an accompaniment underneath, quieter, so the tracker has to pick the top
+     line out rather than being handed it */
+  if (o.under) {
+    for (let bar = 0; bar * 4 < pitches.length; bar++) {
+      const name = o.under[bar % o.under.length];
+      const t0 = Math.round(bar * 4 * beat * rate);
+      for (const midi of VOICING[name]) {
+        for (let k = 1; k <= 4; k++) {
+          const f = hz(midi - 12) * k;
+          const amp = 0.16 / k;
+          const len = Math.min(Math.round(4 * beat * rate), n - t0);
+          for (let j = 0; j < len; j++) {
+            buf[t0 + j] += amp * Math.exp(-j / (rate * 0.8)) * Math.sin((2 * Math.PI * f * j) / rate);
+          }
+        }
+      }
+    }
+  }
+  if (o.noise) for (let i = 0; i < n; i++) buf[i] += (Math.random() - 0.5) * o.noise;
+  return { channels: [buf], rate };
+}
+
+/* What the tracker made of a line, scored against the line itself. */
+function heardLine(pitches, bpm, opts) {
+  const { channels, rate } = renderLine(pitches, bpm, opts);
+  const { x } = L.condition(channels, rate);
+  const spec = L.spectrogram(x);
+  const white = L.whiten(spec);
+  const notes = L.melody(spec, white, spec.fps);
+
+  const beat = 60 / bpm;
+  let right = 0, octaveOut = 0, wrong = 0;
+  for (const want of pitches.map((m, i) => ({ m, t: i * beat }))) {
+    /* whatever the tracker says is sounding in the middle of this note */
+    const at = want.t + beat * 0.45;
+    const got = notes.find((nn) => nn.t <= at && nn.t + nn.d >= at);
+    if (!got) { wrong++; continue; }
+    if (got.pitch === want.m) right++;
+    else if (Math.abs(got.pitch - want.m) % 12 === 0) octaveOut++;
+    else wrong++;
+  }
+  return { notes, right, octaveOut, wrong, of: pitches.length };
+}
+
 /* The listener is free to start its bar lines wherever it finds them, so the
    answer is scored against the truth rotated to wherever it started. */
 function score(heard, seq, bpm) {
@@ -344,6 +410,80 @@ check(`across every case it is at least 80% right on the chords`,
   check('it says how sure it is, and the number means something',
     heard.confidence > 0 && heard.confidence <= 1 && heard.tempoConfidence >= 0,
     `${Math.round(heard.confidence * 100)}% on the chords, ${Math.round(heard.tempoConfidence * 100)}% on the tempo`);
+}
+
+/* ---------- the tune ---------- */
+
+{
+  /* A guitar strumming two chords for eighty seconds sounds like a guitar
+     strumming two chords, however right the chart is. What a song is
+     recognised by is its tune, so the tune has to come out. */
+  const scale = [64, 66, 68, 69, 71, 73, 75, 76];         // E major, one octave
+  const r = heardLine(scale, 100, {});
+  check('a plain line comes back as itself',
+    r.right >= 7, `${r.right}/${r.of} right, ${r.octaveOut} an octave out, ${r.wrong} missed`);
+
+  /* An octave down explains the same peaks as the note itself, and a tune
+     that drops an octave at random stops being the tune. This is the single
+     most common way a pitch tracker goes wrong. */
+  check('and not an octave away from itself', r.octaveOut === 0, `${r.octaveOut} of ${r.of}`);
+}
+
+{
+  /* a tune with chords under it: the tracker has to take the top line */
+  const tune = [76, 74, 72, 74, 76, 76, 76, 74];
+  const r = heardLine(tune, 96, { under: ['C', 'G'] });
+  check('a tune over an accompaniment is still the tune',
+    r.right + r.octaveOut >= 6 && r.right >= 5,
+    `${r.right}/${r.of} right, ${r.octaveOut} an octave out, ${r.wrong} missed`);
+}
+
+{
+  /* a leap, which is where a median filter can smear one note into its
+     neighbours if the window is too wide */
+  const leaps = [60, 72, 60, 72, 64, 76, 64, 76];
+  const r = heardLine(leaps, 88, {});
+  check('a line that leaps about is not smoothed into a ramp',
+    r.right >= 6, `${r.right}/${r.of} right`);
+}
+
+{
+  /* the grid: a tune a sixteenth out of step with its own chords is
+     unlistenable, so it gets snapped, and it has to stay snapped */
+  const beat = 60 / 100;
+  const rough = [
+    { t: 0.03, d: 0.5, pitch: 64, vel: 0.8 },
+    { t: 0.61, d: 0.5, pitch: 66, vel: 0.8 },
+    { t: 1.18, d: 0.5, pitch: 68, vel: 0.8 },
+  ];
+  const q = L.quantise(rough, 0, beat);
+  const step = beat / 4;
+  const off = q.filter((nn) => Math.abs(nn.t / step - Math.round(nn.t / step)) > 1e-6).length;
+  check('a tune is snapped to the sixteenth grid and stays there', off === 0,
+    q.map((nn) => (nn.t / step).toFixed(2)).join(' '));
+  check('and snapping does not collapse two notes onto one moment',
+    new Set(q.map((nn) => nn.t)).size === q.length, `${q.length} notes at ${new Set(q.map((nn) => nn.t)).size} moments`);
+}
+
+{
+  /* silence must not produce a tune */
+  const spec = L.spectrogram(new Float32Array(L.RATE * 4));
+  const notes = L.melody(spec, L.whiten(spec), spec.fps);
+  check('silence has no tune in it', notes.length === 0, `${notes.length} notes`);
+}
+
+{
+  /* and the whole way through: a recording gives back a tune on the same
+     clock as its chords, in the guitar's range */
+  const { channels, rate } = renderLine([64, 66, 68, 69, 71, 69, 68, 66], 100, { under: ['C', 'G'] });
+  const heard = L.listen(channels, rate, REF, {});
+  check('listen() hands back a tune with the chords',
+    Array.isArray(heard.melody) && heard.melody.length > 0,
+    `${heard.melody.length} notes over ${heard.barCount} bars`);
+  const early = heard.melody.filter((nn) => nn.t < -1e-6).length;
+  check('and the tune starts at the same bar line the chords do', early === 0, `${early} notes before bar one`);
+  check('turning the tune off leaves the chords alone',
+    L.listen(channels, rate, REF, { melody: false }).melody.length === 0);
 }
 
 {
