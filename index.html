@@ -1911,8 +1911,32 @@ const LISTENER = (() => {
     const half = scores.find((s) => Math.abs(s.bpm - best.bpm / 2) < best.bpm * 0.03);
     if (half && half.score > best.score * 0.82) best = { bpm: half.bpm, score: half.score, lag: half.lag };
 
+    /* A lag is a whole number of frames, so the tempos this can return sit on
+       a ladder: at this resolution 129.2, then 117.5, then 107.7, about eight
+       per cent apart. Both of two different recordings of the same song came
+       back as 117.45383522727273, identical to the last digit, which is what
+       gave this away. Eight per cent is two beats of drift across twenty four
+       bars: the bar lines slide off the chord changes and take the chart and
+       the quantised tune with them.
+
+       So fit a parabola through the peak and its two neighbours and take its
+       apex. The true peak of an autocorrelation is not at a sample, and this
+       is the standard way to ask where it actually is. */
+    const byLag = new Map(scores.map((q) => [q.lag, q.score]));
+    const l = best.lag;
+    const s0 = byLag.get(l - 1), s1 = byLag.get(l), s2 = byLag.get(l + 1);
+    let refined = l;
+    if (s0 !== undefined && s2 !== undefined) {
+      const denom = s0 - 2 * s1 + s2;
+      if (Math.abs(denom) > 1e-12) {
+        const delta = (0.5 * (s0 - s2)) / denom;
+        if (delta > -0.5 && delta < 0.5) refined = l + delta;
+      }
+    }
+    const bpm = (60 * fps) / refined;
+
     const conf = best.score > 0 ? Math.min(1, best.score / (mean(env.map((v) => v * v)) + 1e-9)) : 0;
-    return { bpm: best.bpm, lag: best.lag, confidence: Math.min(1, conf) };
+    return { bpm: bpm, lag: best.lag, refinedLag: refined, confidence: Math.min(1, conf) };
   }
 
   const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
