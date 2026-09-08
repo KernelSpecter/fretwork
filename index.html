@@ -202,6 +202,10 @@ select:focus-visible,.btn:focus-visible{outline:1px solid var(--lamp);outline-of
 .cbar.turn{border-bottom-color:#6a5a3a}
 .cbar.ring{border-color:#4a4032;color:#e2d6b6}
 .cbar.on{background:linear-gradient(#4a3a18,#33270f);border-color:#7a6330;color:#f4e6bf}
+#app.drop::after{content:'Drop a recording, a MIDI file or a chord sheet';position:fixed;inset:0;z-index:40;
+  display:flex;align-items:center;justify-content:center;pointer-events:none;
+  background:rgba(6,5,4,.72);color:#e6d8b4;font-size:14px;letter-spacing:.1em;
+  box-shadow:inset 0 0 0 2px #7a6330}
 
 /* short windows: give the guitar what room there is */
 @media (max-height:420px){
@@ -919,9 +923,13 @@ registerProcessor('fretwork-tape', TapeProcessor);
       <div class="eng">Song</div>
       <div class="stack">
         <div class="row">
+          <button class="btn mini" id="loadBtn">Open</button>
           <button class="btn mini" id="composeBtn">Compose</button>
           <button class="btn mini" id="songBtn" disabled>Play</button>
           <button class="btn mini" id="chartBtn" disabled>Chart</button>
+          <button class="btn mini on" id="fingersBtn">Fingers</button>
+          <input type="file" id="songFile" accept=".mid,.midi,.txt,.chopro,.cho,.mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm,text/plain,audio/*"
+                 style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
         </div>
         <div class="row">
           <span class="eng" id="songRd" style="min-width:170px"></span>
@@ -1324,6 +1332,956 @@ const ARRANGER = (() => {
   };
 })();
 </script>
+<script id="importer">
+/* fretwork importer
+   Takes a file somebody drops on the page and works out how to play it on six
+   strings. Pure: no DOM, no audio, no clock, one global, so dev/import.mjs
+   pulls it out of index.html and checks it in node.
+
+   A MIDI file says which notes and when. It does not say where on the neck,
+   and that is the whole problem: every pitch can be played in up to six
+   places, a string can only sound one note at a time, and a hand can only
+   reach about four frets at once. So this assigns each note a string and a
+   fret by what it costs the hand, then reads the fingering back off the
+   result, which is what the neck draws.
+
+   Every event carries the whole hand with it, the same way the arranger's do,
+   because the player queues a seventh of a second ahead of the speakers and
+   must not look up "what is held now" when a note finally sounds. */
+const IMPORTER = (() => {
+  'use strict';
+
+  /* standard tuning, low to high, as MIDI note numbers */
+  const OPEN = [40, 45, 50, 55, 59, 64];
+  const MAX_FRET = 15;          // as many as the neck ever draws
+  const HAND_SPAN = 5;          // frets a hand covers without moving
+  const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+  const noteName = (midi) => NAMES[((midi % 12) + 12) % 12];
+
+  /* ---------------------------------------------------------------- MIDI */
+
+  function reader(bytes) {
+    let i = 0;
+    return {
+      get at() { return i; },
+      set at(v) { i = v; },
+      get left() { return bytes.length - i; },
+      u8() { return bytes[i++]; },
+      u16() { const v = (bytes[i] << 8) | bytes[i + 1]; i += 2; return v; },
+      u32() { const v = ((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]) >>> 0; i += 4; return v; },
+      /* the variable length quantity every delta time is written as */
+      vlq() {
+        let v = 0, b;
+        do { b = bytes[i++]; v = (v << 7) | (b & 0x7f); } while (b & 0x80 && i < bytes.length);
+        return v;
+      },
+      str(n) { let s = ''; for (let k = 0; k < n; k++) s += String.fromCharCode(bytes[i++]); return s; },
+      skip(n) { i += n; },
+    };
+  }
+
+  /* Returns { notes, division, tempos, timeSig, tracks } in ticks, or throws. */
+  function parseMidi(buffer) {
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const r = reader(bytes);
+    if (r.left < 14 || r.str(4) !== 'MThd') throw new Error('not a MIDI file');
+    const headerLen = r.u32();
+    const format = r.u16();
+    const ntrks = r.u16();
+    const division = r.u16();
+    r.skip(headerLen - 6);
+    if (division & 0x8000) throw new Error('SMPTE timecode files are not supported');
+    if (!division) throw new Error('this file has no time division');
+
+    const notes = [];
+    const tempos = [];
+    let timeSig = { num: 4, den: 4 };
+    let tracks = 0;
+
+    for (let t = 0; t < ntrks && r.left > 8; t++) {
+      if (r.str(4) !== 'MTrk') break;
+      const len = r.u32();
+      const end = r.at + len;
+      let tick = 0;
+      let status = 0;
+      /* pitch -> the note-on still waiting for its note-off, per channel */
+      const open = new Map();
+      tracks++;
+
+      while (r.at < end && r.at < bytes.length) {
+        tick += r.vlq();
+        let b = r.u8();
+        if (b & 0x80) { status = b; } else { r.at = r.at - 1; }   // running status
+        const type = status & 0xf0;
+        const chan = status & 0x0f;
+
+        if (status === 0xff) {
+          const meta = r.u8();
+          const n = r.vlq();
+          if (meta === 0x51 && n === 3) {
+            const us = (bytes[r.at] << 16) | (bytes[r.at + 1] << 8) | bytes[r.at + 2];
+            if (us > 0) tempos.push({ tick, bpm: 60000000 / us });
+            r.skip(3);
+          } else if (meta === 0x58 && n >= 2) {
+            timeSig = { num: bytes[r.at] || 4, den: Math.pow(2, bytes[r.at + 1] || 2) };
+            r.skip(n);
+          } else {
+            r.skip(n);
+          }
+          if (meta === 0x2f) break;                                // end of track
+          continue;
+        }
+        if (status === 0xf0 || status === 0xf7) { r.skip(r.vlq()); continue; }
+
+        if (type === 0x90 || type === 0x80) {
+          const pitch = r.u8();
+          const vel = r.u8();
+          const key = chan * 128 + pitch;
+          if (type === 0x90 && vel > 0) {
+            open.set(key, { tick, vel });
+          } else {
+            const on = open.get(key);
+            if (on) {
+              open.delete(key);
+              /* channel 10 is the drum kit and has no pitch to play */
+              if (chan !== 9) notes.push({ tick: on.tick, dur: Math.max(1, tick - on.tick), pitch, vel: on.vel, chan, track: t });
+            }
+          }
+          continue;
+        }
+        /* everything else, by how many data bytes it carries */
+        if (type === 0xc0 || type === 0xd0) { r.skip(1); continue; }
+        if (type === 0xa0 || type === 0xb0 || type === 0xe0) { r.skip(2); continue; }
+        r.at = end;                                                // lost the thread
+      }
+      r.at = end;
+    }
+
+    if (!notes.length) throw new Error('no playable notes in this file');
+    notes.sort((a, b) => a.tick - b.tick || a.pitch - b.pitch);
+    return { notes, division, tempos, timeSig, format, tracks };
+  }
+
+  /* Ticks to seconds through the tempo map, so a file that changes speed
+     halfway still lines up. */
+  function secondsOf(mid) {
+    const map = mid.tempos.slice().sort((a, b) => a.tick - b.tick);
+    if (!map.length || map[0].tick > 0) map.unshift({ tick: 0, bpm: 120 });
+    const marks = [{ tick: map[0].tick, sec: 0, bpm: map[0].bpm }];
+    for (let i = 1; i < map.length; i++) {
+      const prev = marks[i - 1];
+      const dt = (map[i].tick - prev.tick) / mid.division * (60 / prev.bpm);
+      marks.push({ tick: map[i].tick, sec: prev.sec + dt, bpm: map[i].bpm });
+    }
+    return (tick) => {
+      let m = marks[0];
+      for (const q of marks) if (q.tick <= tick) m = q; else break;
+      return m.sec + (tick - m.tick) / mid.division * (60 / m.bpm);
+    };
+  }
+
+  /* ---------------------------------------------------------------- the neck */
+
+  const places = (pitch) => {
+    const out = [];
+    for (let s = 0; s < 6; s++) {
+      const fret = pitch - OPEN[s];
+      if (fret >= 0 && fret <= MAX_FRET) out.push({ s, fret });
+    }
+    return out;
+  };
+
+  /* A guitar covers E2 to E4 plus fifteen frets. Most music does not sit
+     there, so the whole piece is shifted by whole octaves to the position
+     where the fewest notes fall off the end. Octaves rather than semitones
+     because a transposed key is still the same tune. */
+  function bestShift(notes) {
+    let best = { shift: 0, lost: Infinity };
+    for (const shift of [0, -12, 12, -24, 24, -36, 36]) {
+      let lost = 0;
+      for (const n of notes) if (!places(n.pitch + shift).length) lost++;
+      if (lost < best.lost) best = { shift, lost };
+      if (lost === 0) break;
+    }
+    return best;
+  }
+
+  /* Greedy, in time order, one group of simultaneous notes at a time. What it
+     is trading off: moving the hand costs, an open string is free, and taking
+     a string that is still ringing costs most of all because it cuts that
+     note off. */
+  function assign(notes, shift, tol) {
+    const busyUntil = [-1, -1, -1, -1, -1, -1];
+    let pos = 0;                                   // where the hand is, in frets
+    const out = [];
+    let dropped = 0;
+    let stolen = 0;
+
+    let i = 0;
+    while (i < notes.length) {
+      const group = [notes[i]];
+      let j = i + 1;
+      while (j < notes.length && notes[j].t - notes[i].t <= tol) { group.push(notes[j]); j++; }
+      i = j;
+
+      group.sort((a, b) => a.pitch - b.pitch);
+      const taken = new Set();
+
+      for (const n of group) {
+        const cands = places(n.pitch + shift).filter((c) => !taken.has(c.s));
+        if (!cands.length) { dropped++; continue; }
+
+        let pickIdx = 0, bestCost = Infinity;
+        cands.forEach((c, k) => {
+          let cost = Math.abs(c.fret - pos);
+          if (c.fret === 0) cost -= 1.5;                       // nothing to reach for
+          if (c.fret > 0 && Math.abs(c.fret - pos) > HAND_SPAN) cost += 4;
+          if (busyUntil[c.s] > n.t + 1e-6) cost += 3.5;        // would cut a ringing note
+          cost += c.s * 0.05;                                  // break ties downward
+          if (cost < bestCost) { bestCost = cost; pickIdx = k; }
+        });
+
+        const pick = cands[pickIdx];
+        taken.add(pick.s);
+        if (busyUntil[pick.s] > n.t + 1e-6) stolen++;
+        busyUntil[pick.s] = n.t + n.d;
+        if (pick.fret > 0) pos = pos * 0.72 + pick.fret * 0.28;
+        out.push({ t: n.t, d: n.d, s: pick.s, fret: pick.fret, vel: n.vel, pitch: n.pitch + shift });
+      }
+    }
+    out.sort((a, b) => a.t - b.t || a.s - b.s);
+    return { notes: out, dropped, stolen };
+  }
+
+  /* Which finger holds what. Frets are numbered from the lowest one the hand
+     is currently over, so the same fret on two strings is one finger barring
+     them, which is what a hand actually does. */
+  function fingersFor(held) {
+    const out = [0, 0, 0, 0, 0, 0];
+    const frets = [...new Set(held.filter((f) => f > 0))].sort((a, b) => a - b);
+    if (!frets.length) return out;
+    const map = new Map();
+    frets.forEach((f, k) => map.set(f, Math.min(4, k + 1)));
+    for (let s = 0; s < 6; s++) if (held[s] > 0) out[s] = map.get(held[s]) || 0;
+    return out;
+  }
+
+  /* ---------------------------------------------------------------- chord text */
+
+  /* A plain text chord sheet: "| G | D | Em | C |", or just chord names one
+     after another, with an optional "bpm: 96" or "pattern: Folk down-up"
+     line. Anything it cannot read is reported rather than guessed at. */
+  function parseChart(text, ref) {
+    const known = new Map();
+    ref.chordShapes.forEach((c, i) => {
+      const bare = c.name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+      if (!known.has(bare)) known.set(bare, i);
+    });
+
+    let bpm = 0;
+    let patName = '';
+    let title = '';
+    const bars = [];
+    const unknown = [];
+
+    for (const raw of String(text).split(/\r?\n/)) {
+      const line = raw.replace(/[#;].*$/, '').trim();
+      if (!line) continue;
+      let m = /^(?:bpm|tempo)\s*[:=]\s*(\d{2,3})$/i.exec(line);
+      if (m) { bpm = +m[1]; continue; }
+      m = /^pattern\s*[:=]\s*(.+)$/i.exec(line);
+      if (m) { patName = m[1].trim(); continue; }
+      m = /^title\s*[:=]\s*(.+)$/i.exec(line);
+      if (m) { title = m[1].trim(); continue; }
+
+      for (const tok of line.split(/[|\s]+/)) {
+        const name = tok.trim();
+        if (!name) continue;
+        if (name === '%' || name === '/') {                 // repeat the last bar
+          if (bars.length) bars.push(bars[bars.length - 1]);
+          continue;
+        }
+        if (known.has(name)) bars.push(name);
+        else if (unknown.length < 8) unknown.push(name);
+      }
+    }
+    return { bars, bpm, patName, title, unknown, known };
+  }
+
+  /* ---------------------------------------------------------------- import */
+
+  function fromMidi(buffer, name) {
+    const mid = parseMidi(buffer);
+    const at = secondsOf(mid);
+    const bpm = Math.max(30, Math.min(300, Math.round((mid.tempos[0] && mid.tempos[0].bpm) || 120)));
+
+    /* seconds, then beats at that one tempo, so a tempo change inside the
+       file survives the conversion instead of being flattened */
+    const timed = mid.notes.map((n) => ({
+      t: at(n.tick),
+      d: Math.max(0.04, at(n.tick + n.dur) - at(n.tick)),
+      pitch: n.pitch,
+      vel: n.vel / 127,
+    })).sort((a, b) => a.t - b.t || a.pitch - b.pitch);
+
+    const { shift, lost } = bestShift(timed);
+    const laid = assign(timed, shift, 0.03);
+
+    const beats = (sec) => (sec * bpm) / 60;
+    const beatsPerBar = mid.timeSig.num * (4 / mid.timeSig.den);
+    const held = [-1, -1, -1, -1, -1, -1];
+    const until = [0, 0, 0, 0, 0, 0];
+    const events = [];
+
+    for (const n of laid.notes) {
+      /* anything that has finished ringing is no longer under a finger */
+      for (let s = 0; s < 6; s++) if (until[s] <= n.t + 1e-6) held[s] = -1;
+      held[n.s] = n.fret;
+      until[n.s] = n.t + n.d;
+      const beat = beats(n.t);
+      events.push({
+        beat,
+        kind: 'P',
+        string: n.s,
+        fret: n.fret,
+        vel: Math.max(0.08, Math.min(1, n.vel * 1.1)),
+        bar: Math.floor(beat / beatsPerBar),
+        held: held.slice(),
+        fingers: fingersFor(held),
+        note: noteName(n.pitch),
+      });
+    }
+
+    const barCount = events.length ? events[events.length - 1].bar + 1 : 0;
+    const bars = [];
+    for (let b = 0; b < barCount; b++) bars.push({ chord: '', frets: [-1, -1, -1, -1, -1, -1], shape: -1, sectionName: 'Bar', section: 0, notes: [] });
+    for (const e of events) {
+      const bar = bars[e.bar];
+      if (bar.notes.length < 4 && !bar.notes.includes(e.note)) bar.notes.push(e.note);
+      bar.frets = e.held.slice();
+    }
+    for (const bar of bars) bar.chord = bar.notes.join(' ') || '·';
+
+    return {
+      data: {
+        kind: 'midi',
+        source: name || 'a MIDI file',
+        title: (name || 'MIDI').replace(/\.[^.]+$/, ''),
+        tempo: bpm,
+        feel: 'straight',
+        beatsPerBar,
+        barCount,
+        bars,
+        sections: [{ name: 'Imported', pass: 1, from: 0, bars: barCount, chords: bars.map((b) => b.chord), pattern: 'as written', picked: true, dyn: 1, source: name || 'MIDI' }],
+        notes: laid.notes.length,
+        shift,
+        dropped: laid.dropped + lost * 0,
+        stolen: laid.stolen,
+        tracks: mid.tracks,
+      },
+      events,
+      endBeat: events.length ? events[events.length - 1].beat + 4 : 0,
+    };
+  }
+
+  function fromChart(text, ref, name) {
+    const parsed = parseChart(text, ref);
+    if (!parsed.bars.length) throw new Error('no chords I recognise in this file');
+
+    const pat = ref.strumPatterns.find((p) => p.name === parsed.patName) || ref.strumPatterns[0];
+    const tempo = parsed.bpm || 96;
+
+    const bars = parsed.bars.map((name2, b) => {
+      const shape = parsed.known.get(name2);
+      const c = ref.chordShapes[shape];
+      return {
+        chord: name2,
+        shape,
+        frets: c.frets.slice(),
+        pat,
+        patName: pat.name,
+        dyn: 0.8,
+        section: 0,
+        sectionName: 'Chart',
+        fill: false,
+        ring: b === parsed.bars.length - 1,
+      };
+    });
+
+    const data = {
+      kind: 'chart',
+      source: name || 'a chord sheet',
+      title: parsed.title || (name || 'Chord sheet').replace(/\.[^.]+$/, ''),
+      tempo,
+      feel: pat.feel,
+      beatsPerBar: 4,
+      barCount: bars.length,
+      bars,
+      sections: [{
+        name: 'Chart', pass: 1, from: 0, bars: bars.length,
+        chords: bars.map((b) => b.chord), pattern: pat.name,
+        picked: Math.max.apply(null, pat.accents) <= 0.8, dyn: 0.8, source: name || 'chord sheet',
+      }],
+      unknown: parsed.unknown,
+    };
+    return { data: data, events: null, endBeat: 0 };
+  }
+
+  return {
+    parseMidi: parseMidi, secondsOf: secondsOf, parseChart: parseChart,
+    fromMidi: fromMidi, fromChart: fromChart,
+    places: places, assign: assign, bestShift: bestShift, fingersFor: fingersFor,
+    noteName: noteName, OPEN: OPEN, MAX_FRET: MAX_FRET, HAND_SPAN: HAND_SPAN,
+  };
+})();
+</script>
+<script id="listener">
+/* fretwork listener
+   Works out what to play from a recording. Pure: samples in, a chart out. No
+   DOM, no audio graph, no clock, one global, so dev/listen.mjs pulls it out of
+   index.html and checks it against signals it builds itself.
+
+   What this is honestly doing, because the difference matters. Pulling every
+   individual note out of a finished mix is an open research problem, and the
+   things that do it well are trained neural networks far larger than this
+   whole page. This does the thing a guitarist actually does with a record:
+   finds the tempo, finds the key, and works out the chord under each bar.
+   That is a well understood signal processing job with no model in it.
+
+     onset strength -> tempo and a beat grid
+     log frequency spectrum -> chroma, folded to twelve pitch classes
+     chroma per bar -> the chord whose template fits best, smoothed over time
+     chord per bar -> a real shape a hand can hold, and a strum to play it with
+
+   It is good on a clean recording of one instrument, decent on a small band,
+   and approximate on a dense mix. So every chord carries how well its
+   template actually fit, the chart shows it, and low confidence is reported
+   rather than hidden. */
+const LISTENER = (() => {
+  'use strict';
+
+  const RATE = 22050;          // plenty for chroma, and a quarter of the work
+  const FRAME = 4096;          // 186ms, 5.4Hz per bin: enough to separate a bass note
+  const HOP = 1024;            // 46ms
+  const MIN_BPM = 60;
+  const MAX_BPM = 180;
+  const NAMES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const NAMES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+  /* ---------------------------------------------------------------- fft */
+
+  /* in place radix 2, iterative, so a long recording does not blow the stack */
+  function fft(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const ang = (-2 * Math.PI) / len;
+      const wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < n; i += len) {
+        let cr = 1, ci = 0;
+        for (let k = 0; k < len / 2; k++) {
+          const ar = re[i + k], ai = im[i + k];
+          const br = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+          const bi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+          re[i + k] = ar + br; im[i + k] = ai + bi;
+          re[i + k + len / 2] = ar - br; im[i + k + len / 2] = ai - bi;
+          const ncr = cr * wr - ci * wi;
+          ci = cr * wi + ci * wr; cr = ncr;
+        }
+      }
+    }
+  }
+
+  /* ---------------------------------------------------------------- front end */
+
+  /* Mix to mono and drop to RATE with a box average, which is a crude
+     antialiasing filter but an honest one at this ratio. */
+  function condition(channels, rate) {
+    const n = channels[0].length;
+    const mono = new Float32Array(n);
+    for (const ch of channels) for (let i = 0; i < n; i++) mono[i] += ch[i];
+    const inv = 1 / channels.length;
+    for (let i = 0; i < n; i++) mono[i] *= inv;
+
+    if (Math.abs(rate - RATE) < 1) return { x: mono, rate: rate };
+    const step = rate / RATE;
+    const out = new Float32Array(Math.floor(n / step));
+    const width = Math.max(1, Math.floor(step));
+    for (let i = 0; i < out.length; i++) {
+      const from = Math.floor(i * step);
+      let sum = 0;
+      for (let k = 0; k < width; k++) sum += mono[Math.min(n - 1, from + k)];
+      out[i] = sum / width;
+    }
+    return { x: out, rate: RATE };
+  }
+
+  function spectrogram(x) {
+    const frames = Math.max(1, Math.floor((x.length - FRAME) / HOP) + 1);
+    const bins = FRAME / 2;
+    const mag = [];
+    const win = new Float32Array(FRAME);
+    for (let i = 0; i < FRAME; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (FRAME - 1));
+    const re = new Float64Array(FRAME), im = new Float64Array(FRAME);
+
+    for (let f = 0; f < frames; f++) {
+      const off = f * HOP;
+      for (let i = 0; i < FRAME; i++) { re[i] = (x[off + i] || 0) * win[i]; im[i] = 0; }
+      fft(re, im);
+      const row = new Float32Array(bins);
+      for (let k = 0; k < bins; k++) row[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      mag.push(row);
+    }
+    return { mag: mag, frames: frames, bins: bins, fps: RATE / HOP };
+  }
+
+  /* ---------------------------------------------------------------- tempo */
+
+  /* Spectral flux: how much brighter this frame is than the last. Only the
+     rises count, because a note starting is an increase and a note ending is
+     not something you tap your foot to. */
+  function onsetStrength(spec) {
+    const out = new Float32Array(spec.frames);
+    for (let f = 1; f < spec.frames; f++) {
+      let sum = 0;
+      const a = spec.mag[f], b = spec.mag[f - 1];
+      for (let k = 1; k < spec.bins; k++) {
+        const d = Math.log1p(a[k]) - Math.log1p(b[k]);
+        if (d > 0) sum += d;
+      }
+      out[f] = sum;
+    }
+    /* take the local mean off so a loud section does not outvote a quiet one */
+    const win = Math.round(spec.fps * 1.5);
+    const smooth = new Float32Array(spec.frames);
+    for (let f = 0; f < spec.frames; f++) {
+      let sum = 0, n = 0;
+      for (let k = Math.max(0, f - win); k <= Math.min(spec.frames - 1, f + win); k++) { sum += out[k]; n++; }
+      smooth[f] = Math.max(0, out[f] - sum / Math.max(1, n));
+    }
+    return smooth;
+  }
+
+  /* Autocorrelate the onset envelope and take the strongest lag in range. The
+     prior keeps it off the half and double, which is where a beat tracker
+     without one spends most of its time. */
+  function findTempo(env, fps) {
+    const lo = Math.floor((60 / MAX_BPM) * fps);
+    const hi = Math.ceil((60 / MIN_BPM) * fps);
+    let best = { bpm: 120, score: 0 };
+    const scores = [];
+
+    for (let lag = lo; lag <= hi && lag < env.length; lag++) {
+      let sum = 0;
+      for (let i = 0; i + lag < env.length; i++) sum += env[i] * env[i + lag];
+      const bpm = (60 * fps) / lag;
+      /* a log normal around 120, which is where music mostly is */
+      const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.55, 2));
+      const score = (sum / Math.max(1, env.length - lag)) * prior;
+      scores.push({ bpm: bpm, lag: lag, score: score });
+      if (score > best.score) best = { bpm: bpm, score: score, lag: lag };
+    }
+
+    /* Where a lag and twice that lag both fit, prefer the one whose beats
+       actually carry the onsets: a tempo that is really half of this one puts
+       every other beat in silence. */
+    const half = scores.find((s) => Math.abs(s.bpm - best.bpm / 2) < best.bpm * 0.03);
+    if (half && half.score > best.score * 0.82) best = { bpm: half.bpm, score: half.score, lag: half.lag };
+
+    const conf = best.score > 0 ? Math.min(1, best.score / (mean(env.map((v) => v * v)) + 1e-9)) : 0;
+    return { bpm: best.bpm, lag: best.lag, confidence: Math.min(1, conf) };
+  }
+
+  const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+
+  /* Slide a pulse train over the envelope: the offset where the pulses land on
+     the most onset energy is where beat one is. */
+  function findPhase(env, lag, fps) {
+    let best = { off: 0, score: -1 };
+    for (let off = 0; off < lag; off++) {
+      let sum = 0, n = 0;
+      for (let i = off; i < env.length; i += lag) { sum += env[Math.round(i)]; n++; }
+      const score = sum / Math.max(1, n);
+      if (score > best.score) best = { off: off, score: score };
+    }
+    return best.off / fps;
+  }
+
+  /* ---------------------------------------------------------------- chroma */
+
+  /* A note brings its own harmonics with it, and they are not it. The third
+     harmonic of a G is a D and the fifth is a B, so a G chord folded straight
+     onto twelve pitch classes reads its own overtones louder than its root and
+     comes out as B minor. This gives each pitch class credit for the harmonics
+     it would have produced, which puts the root back on top. */
+  function salience(raw) {
+    const out = new Float32Array(12);
+    for (let p = 0; p < 12; p++) {
+      out[p] = raw[p]
+        + 0.5 * raw[(p + 7) % 12]      // its third harmonic, a fifth up
+        + 0.2 * raw[(p + 4) % 12];     // its fifth harmonic, a major third up
+    }
+    let max = 0;
+    for (let p = 0; p < 12; p++) if (out[p] > max) max = out[p];
+    if (max > 0) for (let p = 0; p < 12; p++) out[p] /= max;
+    return out;
+  }
+
+  /* Fold the spectrum onto twelve pitch classes. Each semitone gets a
+     triangular window a semitone wide, so a bin between two notes is shared
+     rather than being assigned to whichever it is nearer. */
+  function chromagram(spec, loHz, hiHz) {
+    const LO_MIDI = 33;                    // A1, below the guitar's low E
+    const HI_MIDI = 96;                    // C7
+    const lo = loHz || 50;
+    const hi = hiHz || 2200;
+    const out = [];
+    const binFreq = RATE / FRAME;
+
+    /* precompute, for every bin, which semitone it belongs to and how much */
+    const map = [];
+    for (let k = 1; k < spec.bins; k++) {
+      const f = k * binFreq;
+      if (f < lo || f > hi) { map.push(null); continue; }
+      const midi = 12 * Math.log2(f / 440) + 69;
+      if (midi < LO_MIDI - 0.5 || midi > HI_MIDI + 0.5) { map.push(null); continue; }
+      const near = Math.round(midi);
+      const w = Math.max(0, 1 - Math.abs(midi - near));
+      /* the higher octaves say less about the harmony than the middle ones */
+      const oct = Math.exp(-0.5 * Math.pow((midi - 60) / 22, 2));
+      map.push({ pc: ((near % 12) + 12) % 12, w: w * oct });
+    }
+
+    for (let f = 0; f < spec.frames; f++) {
+      const row = new Float32Array(12);
+      const mag = spec.mag[f];
+      for (let k = 1; k < spec.bins; k++) {
+        const m = map[k - 1];
+        if (!m || !m.w) continue;
+        row[m.pc] += Math.log1p(mag[k] * 40) * m.w;
+      }
+      let max = 0;
+      out.push(salience(row));
+    }
+    return out;
+  }
+
+  /* ---------------------------------------------------------------- chords */
+
+  /* Kept deliberately short. A template set with everything in it fits
+     everything, and a seventh that is really a triad with a passing note in it
+     is a worse answer than the triad. */
+  const TEMPLATES = [
+    { suffix: '', tones: [0, 4, 7], weight: 1.00 },
+    { suffix: 'm', tones: [0, 3, 7], weight: 1.00 },
+    { suffix: '7', tones: [0, 4, 7, 10], weight: 0.94 },
+    { suffix: 'm7', tones: [0, 3, 7, 10], weight: 0.93 },
+  ];
+  /* A sus4 was in this list and came out often enough to be wrong more than it
+     was right: it shares two notes with the triad a fifth away and wins ties
+     it should lose. A template set with everything in it fits everything. */
+
+  /* bass, when there is one, is the strongest single cue there is for the root:
+     F major and A minor share two of their three notes and are told apart by
+     which of them is underneath. */
+  function scoreChord(chroma, root, tpl, bass) {
+    let inside = 0, outside = 0;
+    const has = new Set(tpl.tones.map((t) => (root + t) % 12));
+    for (let p = 0; p < 12; p++) {
+      if (has.has(p)) inside += chroma[p];
+      else outside += chroma[p];
+    }
+    let score = inside / tpl.tones.length - (outside / (12 - tpl.tones.length)) * 0.9;
+    if (bass) {
+      let top = 0;
+      for (let p = 1; p < 12; p++) if (bass[p] > bass[top]) top = p;
+      if (bass[top] > 0.15) {
+        if (top === root) score += 0.22 * bass[top];
+        else if (has.has(top)) score += 0.04 * bass[top];
+        else score -= 0.10 * bass[top];
+      }
+    }
+    return score * tpl.weight;
+  }
+
+  /* Krumhansl's profiles, used only to decide whether to spell a black note
+     sharp or flat and to break a tie between a chord and its relative. */
+  const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+  const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+  function findKey(chroma) {
+    const avg = new Float32Array(12);
+    for (const row of chroma) for (let p = 0; p < 12; p++) avg[p] += row[p];
+    let best = { root: 0, minor: false, score: -Infinity };
+    for (let root = 0; root < 12; root++) {
+      for (const minor of [false, true]) {
+        const prof = minor ? MINOR_PROFILE : MAJOR_PROFILE;
+        let dot = 0, na = 0, nb = 0;
+        for (let p = 0; p < 12; p++) {
+          const a = avg[(p + root) % 12], b = prof[p];
+          dot += a * b; na += a * a; nb += b * b;
+        }
+        const score = dot / Math.sqrt((na || 1) * (nb || 1));
+        if (score > best.score) best = { root: root, minor: minor, score: score };
+      }
+    }
+    return best;
+  }
+
+  /* One chord per segment, then a pass that would rather keep the previous
+     chord than change to something barely better. Without it the chart
+     flickers between a chord and its relative minor every other bar. */
+  function chordTrack(segments, flats, basses) {
+    const cands = [];
+    segments.forEach((seg, i) => {
+      const row = [];
+      const bass = basses ? basses[i] : null;
+      for (let root = 0; root < 12; root++) {
+        for (const tpl of TEMPLATES) row.push({ root: root, tpl: tpl, score: scoreChord(seg, root, tpl, bass) });
+      }
+      row.sort((a, b) => b.score - a.score);
+      cands.push(row.slice(0, 6));
+    });
+
+    /* a small dynamic program: fit, plus a bonus for staying put */
+    const STAY = 0.16;
+    let prev = cands[0].map((c) => ({ c: c, total: c.score, from: -1 }));
+    const table = [prev];
+    for (let i = 1; i < cands.length; i++) {
+      const cur = cands[i].map((c) => {
+        let best = { total: -Infinity, from: 0 };
+        prev.forEach((p, k) => {
+          const same = p.c.root === c.root && p.c.tpl.suffix === c.tpl.suffix ? STAY : 0;
+          const total = p.total + c.score + same;
+          if (total > best.total) best = { total: total, from: k };
+        });
+        return { c: c, total: best.total, from: best.from };
+      });
+      table.push(cur);
+      prev = cur;
+    }
+
+    let at = 0;
+    prev.forEach((p, k) => { if (p.total > prev[at].total) at = k; });
+    const path = [];
+    for (let i = table.length - 1; i >= 0; i--) {
+      const cell = table[i][at];
+      path.unshift(cell.c);
+      at = cell.from < 0 ? 0 : cell.from;
+    }
+
+    const names = flats ? NAMES_FLAT : NAMES_SHARP;
+    return path.map((c) => ({
+      name: names[c.root] + c.tpl.suffix,
+      root: c.root,
+      suffix: c.tpl.suffix,
+      confidence: Math.max(0, Math.min(1, c.score)),
+    }));
+  }
+
+  /* ---------------------------------------------------------------- shapes */
+
+  /* Any of the twelve roots may turn up in a recording, and the reference data
+     has open shapes for only some of them. So: an exact name if there is one,
+     and otherwise a movable barre shape of the same quality slid to the right
+     fret, which is exactly what a player does. */
+  function shapeFinder(ref, maxFret) {
+    const cap = maxFret || 12;
+    const pc = (name) => {
+      const i = NAMES_SHARP.indexOf(name);
+      if (i >= 0) return i;
+      const j = NAMES_FLAT.indexOf(name);
+      return j >= 0 ? j : -1;
+    };
+    const parse = (full) => {
+      const m = /^([A-G][#b]?)(.*)$/.exec(full);
+      return m ? { root: pc(m[1]), suffix: m[2] } : null;
+    };
+
+    const exact = new Map();
+    const movable = [];
+    ref.chordShapes.forEach((c, i) => {
+      const bare = c.name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+      const p = parse(bare);
+      if (!p || p.root < 0) return;
+      const key = p.root + '|' + p.suffix;
+      if (!exact.has(key) || (c.openPosition && !exact.get(key).open)) {
+        exact.set(key, { index: i, frets: c.frets, open: !!c.openPosition, name: bare });
+      }
+      /* a shape with no open string in it can be slid anywhere */
+      if (c.movable && c.frets.every((f) => f !== 0)) {
+        movable.push({ index: i, frets: c.frets, root: p.root, suffix: p.suffix, name: bare });
+      }
+    });
+
+    return function find(root, suffix) {
+      const want = ((root % 12) + 12) % 12;
+      const tries = [suffix];
+      /* a seventh nobody has a shape for is still better played as its triad
+         than not played at all */
+      if (suffix === 'm7') tries.push('m');
+      if (suffix === '7') tries.push('');
+      if (suffix === 'sus4') tries.push('');
+
+      for (const s of tries) {
+        const hit = exact.get(want + '|' + s);
+        if (hit && Math.max.apply(null, hit.frets) <= cap) {
+          return { index: hit.index, frets: hit.frets.slice(), name: hit.name, moved: 0 };
+        }
+      }
+      for (const s of tries) {
+        for (const m of movable.filter((x) => x.suffix === s)) {
+          let shift = (want - m.root + 12) % 12;
+          for (const delta of [shift, shift - 12, shift + 12]) {
+            const frets = m.frets.map((f) => (f < 0 ? -1 : f + delta));
+            const on = frets.filter((f) => f >= 0);
+            if (!on.length) continue;
+            if (Math.min.apply(null, on) < 1 || Math.max.apply(null, on) > cap) continue;
+            return { index: m.index, frets: frets, name: m.name, moved: delta };
+          }
+        }
+      }
+      return null;
+    };
+  }
+
+  /* ---------------------------------------------------------------- listen */
+
+  /* channels: an array of Float32Array, one per channel. */
+  function listen(channels, rate, ref, opts) {
+    const o = Object.assign({ barsPerChord: 1, maxFret: 12 }, opts || {});
+    if (!channels || !channels.length || !channels[0].length) throw new Error('there is no audio in this file');
+
+    const { x } = condition(channels, rate);
+    const seconds = x.length / RATE;
+    if (seconds < 2) throw new Error('too short to find a tempo in');
+
+    const spec = spectrogram(x);
+    const env = onsetStrength(spec);
+    const tempo = findTempo(env, spec.fps);
+    const phase = findPhase(env, tempo.lag, spec.fps);
+    const chroma = chromagram(spec);
+    /* the same fold again but only under 260Hz, which is the bass */
+    const bassChroma = chromagram(spec, 38, 300);
+    const key = findKey(chroma);
+
+    /* black notes get spelled the way the key spells them */
+    const flats = [3, 8, 10, 1, 5].includes(key.root) || (key.minor && [2, 7, 0].includes(key.root));
+
+    const beat = 60 / tempo.bpm;
+    const beatsPerBar = 4;
+    const barSec = beat * beatsPerBar;
+
+    const average = (rows, from, to) => {
+      const acc = new Float32Array(12);
+      let n = 0;
+      for (let f = Math.max(0, from); f < Math.min(rows.length, to); f++) {
+        for (let p = 0; p < 12; p++) acc[p] += rows[f][p];
+        n++;
+      }
+      if (n) for (let p = 0; p < 12; p++) acc[p] /= n;
+      return acc;
+    };
+    const cut = (start, b) => Math.floor(((start + b * barSec) * RATE) / HOP);
+
+    /* The beat phase says where a beat is, not which beat is beat one. Getting
+       that wrong smears two chords into every bar and the chart comes out
+       nonsense, so all four are tried and the one the harmony agrees with most
+       is kept: a bar line in the right place makes every chord in it fit
+       better at once. */
+    let aligned = null;
+    for (let k = 0; k < beatsPerBar; k++) {
+      const start = phase + k * beat;
+      const count = Math.max(1, Math.floor((seconds - start) / barSec));
+      if (count < 1) continue;
+      const segs = [], low = [];
+      for (let b = 0; b < count; b++) {
+        segs.push(average(chroma, cut(start, b), cut(start, b + 1)));
+        low.push(average(bassChroma, cut(start, b), cut(start, b + 1)));
+      }
+      const track = chordTrack(segs, flats, low);
+      const fit = mean(track.map((c) => c.confidence));
+      if (!aligned || fit > aligned.fit) aligned = { start: start, beatOffset: k, chords: track, fit: fit, count: count };
+    }
+    if (!aligned) throw new Error('could not find a bar line in this');
+
+    const firstBar = aligned.start;
+    const barCount = aligned.count;
+    const chords = aligned.chords;
+    const find = shapeFinder(ref, o.maxFret);
+
+    /* how busy the record is decides what it gets strummed with */
+    const perBar = mean(Array.from(env)) * spec.fps * beat;
+    const pool = ref.strumPatterns.filter((p) => p.feel === 'straight');
+    pool.sort((a, b) => a.slots.filter((s) => s !== '-').length - b.slots.filter((s) => s !== '-').length);
+    const pat = pool[Math.min(pool.length - 1, Math.max(0, Math.round(perBar * 2)))] || ref.strumPatterns[0];
+
+    let unplayable = 0;
+    const bars = chords.map((c, b) => {
+      const sh = find(c.root, c.suffix);
+      if (!sh) unplayable++;
+      return {
+        chord: sh ? c.name : c.name + '?',
+        shape: sh ? sh.index : -1,
+        frets: sh ? sh.frets : [-1, -1, -1, -1, -1, -1],
+        pat: pat,
+        patName: pat.name,
+        dyn: 0.82,
+        section: 0,
+        sectionName: 'Heard',
+        fill: false,
+        ring: b === chords.length - 1,
+        confidence: c.confidence,
+      };
+    });
+
+    const conf = mean(chords.map((c) => c.confidence));
+    const names = flats ? NAMES_FLAT : NAMES_SHARP;
+
+    return {
+      kind: 'audio',
+      title: '',
+      source: '',
+      tempo: Math.round(tempo.bpm),
+      feel: pat.feel,
+      beatsPerBar: beatsPerBar,
+      barCount: bars.length,
+      bars: bars,
+      key: names[key.root] + (key.minor ? 'm' : ''),
+      keyConfidence: key.score,
+      tempoConfidence: tempo.confidence,
+      confidence: conf,
+      offset: firstBar,
+      beatOffset: aligned.beatOffset,
+      seconds: seconds,
+      unplayable: unplayable,
+      sections: [{
+        name: 'Heard', pass: 1, from: 0, bars: bars.length,
+        chords: bars.map((b) => b.chord), pattern: pat.name,
+        picked: Math.max.apply(null, pat.accents) <= 0.8, dyn: 0.82, source: 'the recording',
+      }],
+    };
+  }
+
+  return {
+    listen: listen, condition: condition, spectrogram: spectrogram,
+    onsetStrength: onsetStrength, findTempo: findTempo, findPhase: findPhase,
+    chromagram: chromagram, chordTrack: chordTrack, findKey: findKey,
+    scoreChord: scoreChord, shapeFinder: shapeFinder, fft: fft,
+    RATE: RATE, FRAME: FRAME, HOP: HOP, TEMPLATES: TEMPLATES,
+    NAMES_SHARP: NAMES_SHARP, NAMES_FLAT: NAMES_FLAT,
+  };
+})();
+</script>
 <script>'use strict';
 /* fretwork, the part you can see and touch. The sound itself lives in the
    engine block above; everything here decides what to tell it. */
@@ -1365,6 +2323,12 @@ const state = {
   harmonic: false,
   palm: false,
   mode: 'auto',
+  /* A hand, when something knows one: six finger numbers, 0 for none. A named
+     chord has its own in the reference data, so this stays null for those and
+     drawFingers reads the chord. An imported file has no names, so the
+     importer derives one and puts it here. */
+  fingers: null,
+  showFingers: true,
   tempo: 96,
   pattern: REF.strumPatterns[0],
   auto: false,
@@ -1809,6 +2773,12 @@ function strum(dir, vel, frets, when) {
     post(dead);
   }
   state.lastPluckAt = performance.now();
+  const showStroke = () => fx.strummed(up ? -1 : 1);
+  if (when === undefined) showStroke();
+  else {
+    const waitFor = (base - audio.ctx.currentTime) * 1000;
+    if (waitFor <= 4) showStroke(); else setTimeout(showStroke, waitFor);
+  }
   hideHint();
 }
 
@@ -2196,8 +3166,14 @@ function roundRect(g, x, y, w, h, r) {
 }
 
 /* ---- strings ---- */
-const fx = { amp: [0, 0, 0, 0, 0, 0], phase: [0, 0, 0, 0, 0, 0] };
-fx.hit = (s, v) => { fx.amp[s] = Math.max(fx.amp[s], v); };
+const fx = { amp: [0, 0, 0, 0, 0, 0], phase: [0, 0, 0, 0, 0, 0], stroke: { dir: 0, s: -1, at: 0 } };
+fx.hit = (s, v) => {
+  fx.amp[s] = Math.max(fx.amp[s], v);
+  /* a single note puts the picking hand on that string; a strum replaces this
+     a moment later with the direction the hand went */
+  fx.stroke = { dir: 0, s: s, at: performance.now() };
+};
+fx.strummed = (dir) => { fx.stroke = { dir: dir, s: -1, at: performance.now() }; };
 
 function drawStrings(g) {
   const inst = state.inst;
@@ -2290,7 +3266,10 @@ function drawFingers(g) {
   for (let s = 0; s < 6; s++) {
     const y = stringY(s);
     const f = state.held[s];
-    const fing = c && c.frets[s] === f ? c.fingers[s] : 0;
+    const hand = state.showFingers
+      ? (state.fingers ? state.fingers[s] : (c && c.frets[s] === f ? c.fingers[s] : 0))
+      : 0;
+    const fing = hand;
     if (f === -1) {
       g.strokeStyle = 'rgba(216,132,102,.8)'; g.lineWidth = 1.8;
       const x = L.nutX - 17, q = 4.4;
@@ -2315,9 +3294,9 @@ function drawFingers(g) {
     g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
     g.restore();
     g.strokeStyle = 'rgba(46,30,8,.55)'; g.lineWidth = 1; g.stroke();
-    if (fing > 0 && r > 7.5) {
-      g.fillStyle = 'rgba(38,25,8,.88)';
-      g.font = `600 ${Math.round(r * 1.02)}px ${dotFont}`;
+    if (fing > 0) {
+      g.fillStyle = 'rgba(38,25,8,.92)';
+      g.font = `700 ${Math.max(9, Math.round(r * 1.02))}px ${dotFont}`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText(String(fing), x, y + 0.5);
     }
@@ -2394,6 +3373,198 @@ function drawStringNames(g) {
 }
 
 let rafId = 0;
+/* The four fingers, in the order a player counts them. Kept dusty on purpose:
+   this is a workbench under a lamp, not a teaching app, and four saturated
+   colours across the fretboard would be the loudest thing on the page. */
+const FINGER_TINT = [
+  null,
+  { fill: 'rgba(216,166,74,.88)', line: 'rgba(120,86,26,.95)' },
+  { fill: 'rgba(196,124,74,.88)', line: 'rgba(108,60,28,.95)' },
+  { fill: 'rgba(150,158,102,.88)', line: 'rgba(74,82,44,.95)' },
+  { fill: 'rgba(126,146,158,.88)', line: 'rgba(58,74,84,.95)' },
+];
+
+/* a rounded bar from one point to another, thick at one end */
+function capsule(g, x1, y1, x2, y2, w1, w2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+  g.beginPath();
+  g.moveTo(x1 + nx * w1, y1 + ny * w1);
+  g.lineTo(x2 + nx * w2, y2 + ny * w2);
+  g.arc(x2, y2, w2, Math.atan2(ny, nx), Math.atan2(-ny, -nx), false);
+  g.lineTo(x1 - nx * w1, y1 - ny * w1);
+  g.arc(x1, y1, w1, Math.atan2(-ny, -nx), Math.atan2(ny, nx), false);
+  g.closePath();
+}
+
+/* The fretting hand, drawn where it actually is: palm under the neck, fingers
+   reaching up over it to the notes being held, thumb hooked behind. Without
+   this the fingering was a number inside a dot, which tells you which finger
+   only if you already knew where your hand was. */
+function drawHand(g) {
+  if (!state.showFingers) return;
+  if (!dotFont) dotFont = getComputedStyle(document.body).fontFamily;
+
+  const c = state.chord;
+  const pegs = [];
+  for (let s = 0; s < 6; s++) {
+    const f = state.held[s];
+    if (f <= 0 || f > L.frets) continue;
+    const fing = state.fingers ? state.fingers[s] : (c && c.frets[s] === f ? c.fingers[s] : 0);
+    if (!fing) continue;
+    pegs.push({ s: s, f: f, fing: fing, x: (fretX(f - 1) + fretX(f)) / 2, y: stringY(s) });
+  }
+  if (!pegs.length) return;
+
+  const r = Math.min(L.gap * 0.42, 13);
+  const palmY = stringY(5) + L.gap * 1.45;
+  const spread = Math.min(L.gap * 0.66, 22);
+
+  const byFinger = new Map();
+  for (const peg of pegs) {
+    if (!byFinger.has(peg.fing)) byFinger.set(peg.fing, []);
+    byFinger.get(peg.fing).push(peg);
+  }
+  /* where the thumb goes, behind the middle of what is being held */
+  const centre = pegs.reduce((a, b) => a + b.x, 0) / pegs.length;
+
+  g.save();
+
+  /* the palm and the wrist, running off the bottom of the board. It sits over
+     the frets the fingers are actually using rather than being centred on
+     them, because a hand is not symmetrical about its middle finger. */
+  const reach = pegs.map((peg) => peg.x);
+  const palmL = Math.min.apply(null, reach) - spread * 1.1;
+  const palmR = Math.max.apply(null, reach) + spread * 1.1 + r * 1.25 * Math.max(0, byFinger.size - 1);
+  const top = palmY - L.gap * 0.3;
+  const grd = g.createLinearGradient(0, top, 0, palmY + L.gap * 1.8);
+  grd.addColorStop(0, 'rgba(78,63,47,.42)');
+  grd.addColorStop(1, 'rgba(30,24,18,.72)');
+  g.fillStyle = grd;
+  const rr = Math.min(L.gap * 0.45, 13);
+  g.beginPath();
+  g.moveTo(palmL + rr, top);
+  g.lineTo(palmR - rr, top);
+  g.quadraticCurveTo(palmR, top, palmR, top + rr);
+  g.lineTo(palmR, palmY + L.gap * 1.8);
+  g.lineTo(palmL, palmY + L.gap * 1.8);
+  g.lineTo(palmL, top + rr);
+  g.quadraticCurveTo(palmL, top, palmL + rr, top);
+  g.closePath();
+  g.fill();
+  g.strokeStyle = 'rgba(120,100,76,.5)';
+  g.lineWidth = 1;
+  g.stroke();
+
+  /* the thumb, over the top edge behind the neck */
+  const thumbY = stringY(0) - L.gap * 0.78;
+  const thumbGrd = g.createLinearGradient(0, thumbY - r, 0, thumbY + r);
+  thumbGrd.addColorStop(0, 'rgba(104,86,64,.82)');
+  thumbGrd.addColorStop(1, 'rgba(58,47,35,.82)');
+  g.fillStyle = thumbGrd;
+  g.strokeStyle = 'rgba(140,118,88,.6)';
+  g.lineWidth = 1;
+  capsule(g, centre - spread * 1.3, thumbY + L.gap * 0.18, centre + spread * 0.7, thumbY, r * 0.68, r * 0.56);
+  g.fill();
+  g.stroke();
+
+  /* Two fingers on the same fret, on different strings, want the same knuckle
+     and land on top of each other. Nudge them apart in finger order, which is
+     the order they sit in on a hand anyway. */
+  const order = [...byFinger.keys()].sort((a, b) => a - b);
+  const knuckleAt = new Map();
+  let lastX = -Infinity;
+  for (const fing of order) {
+    const group = byFinger.get(fing);
+    const own = group.reduce((a, b) => a + b.x, 0) / group.length;
+    const x = Math.max(lastX + r * 1.25, own);
+    knuckleAt.set(fing, Math.max(palmL + r, Math.min(palmR - r, x)));
+    lastX = knuckleAt.get(fing);
+  }
+
+  /* one finger per fret in use, reaching from its knuckle to the notes it holds */
+  for (const fing of order) {
+    const group = byFinger.get(fing);
+    const tint = FINGER_TINT[Math.min(4, Math.max(1, fing))];
+    /* A knuckle belongs under the fret its finger is holding. Spreading them
+       by finger number instead put finger three's knuckle under finger one's
+       fret, and the two reached across each other to get where they were
+       going, which is not a hand any more. */
+    const knuckleX = knuckleAt.get(fing);
+    const knuckleY = palmY + L.gap * 0.1;
+    const near = group.reduce((a, b) => (a.y > b.y ? a : b));
+    const far = group.reduce((a, b) => (a.y < b.y ? a : b));
+
+    /* a finger holding several strings at one fret is barring them */
+    if (group.length > 1) {
+      g.globalAlpha = 0.55;
+      g.fillStyle = tint.fill;
+      capsule(g, near.x, near.y, far.x, far.y, r * 0.84, r * 0.84);
+      g.fill();
+      g.globalAlpha = 1;
+    }
+
+    g.fillStyle = tint.fill;
+    g.strokeStyle = tint.line;
+    g.lineWidth = 1.1;
+    capsule(g, knuckleX, knuckleY, near.x, near.y, r * 0.74, r * 0.56);
+    g.fill();
+    g.stroke();
+
+    /* the knuckle, numbered, so the hand reads as a hand */
+    g.beginPath();
+    g.arc(knuckleX, knuckleY, r * 0.56, 0, 7);
+    g.fillStyle = tint.line;
+    g.fill();
+    g.font = `700 ${Math.max(8, Math.round(r * 0.78))}px ${dotFont}`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = 'rgba(240,229,203,.95)';
+    g.fillText(String(fing), knuckleX, knuckleY + 0.5);
+  }
+  g.restore();
+}
+
+/* The other hand. Which way it last moved and over which string, so a picked
+   part shows what the picking hand is doing and not only the fretting one. */
+function drawPickingHand(g) {
+  if (!state.showFingers) return;
+  const age = (performance.now() - (fx.stroke.at || 0)) / 1000;
+  if (age > 1.1) return;
+
+  const a = Math.max(0, 1 - age / 1.1);
+  const x = (L.neckEnd + L.bridgeX) / 2;
+  const y = fx.stroke.s >= 0 ? stringY(fx.stroke.s) : (stringY(0) + stringY(5)) / 2;
+  const r = Math.min(L.gap * 0.5, 15);
+
+  g.save();
+  g.globalAlpha = a * 0.9;
+  g.fillStyle = 'rgba(216,166,74,.42)';
+  g.beginPath();
+  g.arc(x, y, r * 0.7, 0, 7);
+  g.fill();
+
+  if (fx.stroke.dir) {
+    const dy = fx.stroke.dir > 0 ? 1 : -1;
+    const len = L.gap * 1.6;
+    g.strokeStyle = 'rgba(242,228,190,.9)';
+    g.lineWidth = 2.2;
+    g.lineCap = 'round';
+    g.beginPath();
+    g.moveTo(x, y - dy * len * 0.5);
+    g.lineTo(x, y + dy * len * 0.5);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(x - r * 0.34, y + dy * (len * 0.5 - r * 0.34));
+    g.lineTo(x, y + dy * len * 0.5);
+    g.lineTo(x + r * 0.34, y + dy * (len * 0.5 - r * 0.34));
+    g.stroke();
+    g.lineCap = 'butt';
+  }
+  g.restore();
+}
+
 function frame() {
   rafId = requestAnimationFrame(frame);
   pollPad();
@@ -2409,6 +3580,8 @@ function frame() {
   drawStrumZone(g);
   drawStrings(g);
   drawFingers(g);
+  drawHand(g);
+  drawPickingHand(g);
   drawStringNames(g);
   drawFretNumbers(g);
 
@@ -2769,6 +3942,8 @@ function renderRail() {
 function setChord(c) {
   state.chord = c;
   state.held = c.frets.slice();
+  /* the shape carries its own fingering, so the derived one steps aside */
+  state.fingers = null;
 }
 
 function openChords() { $('chordSheet').classList.add('open'); buildChordGrid(); }
@@ -2887,6 +4062,11 @@ function maybeStopSeq() {
 const song = {
   data: null, ev: [], i: 0, t0: 0, endBeat: 0,
   playing: false, bar: -1, queued: -1, note: '',
+  /* Bumped every time the song changes or restarts. The neck is moved by
+     timers set when an event was queued, which can be a whole song's worth
+     still pending; without this they arrive late and move the hand of a song
+     that is no longer playing. */
+  gen: 0,
 };
 
 const beatSec = () => 60 / state.tempo;
@@ -2940,6 +4120,89 @@ function compose(seed) {
   return data;
 }
 
+/* Load whatever was dropped on the page. A MIDI file becomes notes with a
+   place on the neck for each one; a text chord sheet becomes bars the strum
+   patterns already know how to play. Anything else is refused out loud. */
+const AUDIO_RE = /\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|webm|weba|aif|aiff)$/i;
+/* A long record takes a while to listen to and it all happens on the main
+   thread, so there is a limit past which it stops listening and says so. */
+const LISTEN_MAX_SEC = 240;
+
+async function loadSong(file) {
+  const name = file.name || 'a file';
+  const midi = /\.midi?$/i.test(name) || /midi/i.test(file.type || '');
+  const isAudio = !midi && (AUDIO_RE.test(name) || /^audio\//.test(file.type || ''));
+  try {
+    let out;
+    if (isAudio) {
+      if (!audio.ready && !(await startAudio())) throw new Error('the audio engine would not start');
+      const el = $('songRd');
+      if (el) el.textContent = `Listening to ${name}…`;
+      /* let that paint before the main thread disappears into an FFT */
+      await new Promise((r) => setTimeout(r, 30));
+
+      const decoded = await audio.ctx.decodeAudioData(await file.arrayBuffer());
+      const keep = Math.min(decoded.length, Math.floor(LISTEN_MAX_SEC * decoded.sampleRate));
+      const channels = [];
+      for (let c = 0; c < decoded.numberOfChannels; c++) channels.push(decoded.getChannelData(c).subarray(0, keep));
+
+      const heard = LISTENER.listen(channels, decoded.sampleRate, REF, { maxFret: 12 });
+      heard.title = name.replace(/\.[^.]+$/, '');
+      heard.source = name;
+      heard.clipped = decoded.length > keep;
+      out = Object.assign({ data: heard }, ARRANGER.compile(heard));
+    } else if (midi) {
+      out = IMPORTER.fromMidi(new Uint8Array(await file.arrayBuffer()), name);
+    } else {
+      out = IMPORTER.fromChart(await file.text(), REF, name);
+      out = { data: out.data, ...ARRANGER.compile(out.data) };
+    }
+
+    songStop();
+    const moved = standardise();
+    song.data = out.data;
+    song.ev = out.events;
+    song.endBeat = out.endBeat;
+
+    const d = out.data;
+    state.tempo = d.tempo;
+    const opt = [...$('tempoSel').options].find((o) => o.value === String(d.tempo));
+    if (opt) $('tempoSel').value = opt.value;
+
+    const notes = [];
+    if (d.kind === 'midi') {
+      notes.push(`${d.notes} notes`);
+      if (d.shift) notes.push(`moved ${Math.abs(d.shift) / 12} octave${Math.abs(d.shift) === 12 ? '' : 's'} ${d.shift > 0 ? 'up' : 'down'} to fit the neck`);
+      if (d.dropped) notes.push(`${d.dropped} out of reach`);
+    }
+    if (d.kind === 'audio') {
+      notes.push(`heard ${d.key}`);
+      notes.push(`${Math.round(d.confidence * 100)}% sure of the chords`);
+      if (d.confidence < 0.45) notes.push('a dense mix, so treat the chart as a first guess');
+      if (d.clipped) notes.push(`listened to the first ${LISTEN_MAX_SEC / 60} minutes`);
+      if (d.unplayable) notes.push(`${d.unplayable} chords it has no shape for`);
+    }
+    if (d.unknown && d.unknown.length) notes.push(`did not know ${d.unknown.slice(0, 4).join(', ')}`);
+    if (moved) notes.push('standard tuning');
+    song.note = notes.join(' · ');
+
+    const first = d.bars[0] && CHORDS[d.bars[0].shape];
+    if (first) { setChord(first); renderRail(); }
+
+    $('songBtn').disabled = false;
+    $('chartBtn').disabled = false;
+    buildChart();
+    songReadout();
+    try { history.replaceState(null, '', location.pathname); } catch (e) { /* not fatal */ }
+    return d;
+  } catch (err) {
+    song.note = '';
+    const el = $('songRd');
+    if (el) el.textContent = `Could not read ${name}: ${err.message}`;
+    return null;
+  }
+}
+
 async function songStart() {
   if (!song.data && !compose()) return;
   if (!audio.ready && !(await startAudio())) return;
@@ -2952,6 +4215,7 @@ async function songStart() {
   song.queued = -1;
   song.note = '';
   song.playing = true;
+  song.gen++;
 
   startSeq();
   /* the click and bar one start on the same downbeat */
@@ -2971,6 +4235,7 @@ async function songStart() {
 function songStop() {
   const was = song.playing;
   song.playing = false;
+  song.gen++;
   song.i = 0;
   song.bar = -1;
   song.queued = -1;
@@ -2991,6 +4256,11 @@ function songSchedule(horizon) {
     if (when > horizon) return;
 
     if (e.bar !== song.queued) { song.queued = e.bar; showBarAt(e.bar, when); }
+    /* An imported file has no chord names to move between, so the hand it
+       leaves behind travels with the note instead. It has to: the note is
+       queued a seventh of a second before it sounds, and the neck must not
+       show the next note's fingers under the one you are hearing. */
+    if (e.held) showHandAt(e, when);
 
     if (e.kind === 'D') strum(1, e.vel, e.frets, when);
     else if (e.kind === 'U') strum(-1, e.vel, e.frets, when);
@@ -3003,17 +4273,29 @@ function songSchedule(horizon) {
   if (audio.ctx.currentTime >= songTime(song.endBeat)) songStop();
 }
 
+function showHandAt(e, when) {
+  const wait = Math.max(0, (when - audio.ctx.currentTime) * 1000);
+  const gen = song.gen;
+  setTimeout(() => {
+    if (!song.playing || song.gen !== gen) return;
+    state.held = e.held.slice();
+    state.fingers = e.fingers ? e.fingers.slice() : null;
+    state.chord = null;
+  }, wait);
+}
+
 /* The neck moves when the bar can be heard, not when it was scheduled. */
 function showBarAt(b, when) {
   const wait = Math.max(0, (when - audio.ctx.currentTime) * 1000);
+  const gen = song.gen;
   setTimeout(() => {
-    if (!song.playing || !song.data) return;
+    if (!song.playing || !song.data || song.gen !== gen) return;
     const bar = song.data.bars[b];
     if (!bar) return;
     song.bar = b;
     const c = CHORDS[bar.shape];
+    /* an imported file has no shape for a bar; its notes move the hand themselves */
     if (c) setChord(c);
-    else { state.chord = null; state.held = bar.frets.slice(); }
     songReadout();
     markChart(b);
   }, wait);
@@ -3031,6 +4313,7 @@ function songReadout() {
   }
   el.textContent = `${d.title} · ${d.tempo} bpm · ${songLength(d)}s`
     + (song.note ? ' · ' + song.note : '');
+  el.title = d.source ? 'from ' + d.source : '';
 }
 
 /* ---------- the chart ---------- */
@@ -3043,10 +4326,15 @@ function buildChart() {
   if (!d) return;
 
   $('chartHead').textContent = d.title;
+  const where = d.seed !== undefined ? `Grown from "${d.source}". Seed ${d.seed}.`
+    : d.kind === 'midi' ? `Read off ${d.source}, ${d.notes} notes across ${d.tracks} track${d.tracks === 1 ? '' : 's'}.`
+      : d.kind === 'audio' ? `Heard in ${d.source}: ${d.key}, and the tempo found in the recording itself. `
+        + `Every chord is the best fit for what is under that bar, ${Math.round(d.confidence * 100)}% on average, `
+        + 'and a paler cell is one it is less sure of.'
+        : `Read off ${d.source}.`;
   $('chartSub').textContent =
-    `${d.tempo} bpm, ${d.feel}, ${d.barCount} bars, about ${songLength(d)} seconds. `
-    + `Grown from "${d.source}". Seed ${d.seed}.`
-    + (song.note ? ' The shapes are standard-tuning fingerings, so it set the tuning back.' : '');
+    `${d.tempo} bpm, ${d.feel}, ${d.barCount} bars, about ${songLength(d)} seconds. ${where}`
+    + (song.note ? ' ' + song.note[0].toUpperCase() + song.note.slice(1) + '.' : '');
 
   const counts = {};
   for (const s of d.sections) counts[s.name] = (counts[s.name] || 0) + 1;
@@ -3069,6 +4357,8 @@ function buildChart() {
       const b = d.bars[s.from + i];
       const cell = document.createElement('div');
       cell.className = 'cbar' + (b && b.fill ? ' turn' : '') + (b && b.ring ? ' ring' : '');
+      /* how sure it was, when it was guessing */
+      if (b && b.confidence !== undefined) cell.style.opacity = String(0.42 + 0.58 * Math.min(1, b.confidence * 1.3));
       cell.dataset.bar = String(s.from + i);
       cell.textContent = name;
       bars.appendChild(cell);
@@ -3232,7 +4522,9 @@ const KEYHELP = [
   ['Up / Down', 'Softer or harder'],
   ['Left / Right', 'Move the capo'],
   ['Enter', 'Start and stop the strum pattern'],
+  ['O', 'Open a recording, a MIDI file or a chord sheet, or drop one on the page'],
   ['N', 'Compose a new song'],
+  ['F', 'Show or hide the fingering on the neck'],
   ['P', 'Play or stop the composed song'],
   ['L', 'Show its chart'],
   ['R', 'Record'],
@@ -3299,6 +4591,8 @@ window.addEventListener('keydown', async (e) => {
   if (k === 'n') { compose(); return; }
   if (k === 'p') { $('songBtn').click(); return; }
   if (k === 'l') { $('chartBtn').click(); return; }
+  if (k === 'o') { $('loadBtn').click(); return; }
+  if (k === 'f') { $('fingersBtn').click(); return; }
 });
 window.addEventListener('keyup', (e) => {
   const k = e.key.toLowerCase();
@@ -3435,6 +4729,37 @@ function init() {
     $('strumBtn').classList.toggle('on', seq.on);
     if (seq.on) startSeq(); else maybeStopSeq();
   };
+  $('loadBtn').onclick = () => $('songFile').click();
+  $('songFile').onchange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) loadSong(f);
+    e.target.value = '';
+  };
+  $('fingersBtn').onclick = () => {
+    state.showFingers = !state.showFingers;
+    $('fingersBtn').classList.toggle('on', state.showFingers);
+  };
+
+  /* dropping a file anywhere on the page opens it */
+  const app = $('app');
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault(); dragDepth++; app.classList.add('drop');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault();
+  });
+  window.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) app.classList.remove('drop');
+  });
+  window.addEventListener('drop', (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault(); dragDepth = 0; app.classList.remove('drop');
+    loadSong(e.dataTransfer.files[0]);
+  });
+
   $('composeBtn').onclick = () => { compose(); };
   $('songBtn').onclick = () => { if (song.playing) songStop(); else songStart(); };
   $('chartBtn').onclick = () => { if (song.data) { buildChart(); markChart(song.bar); $('chartSheet').classList.add('open'); } };

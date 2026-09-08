@@ -122,6 +122,78 @@ tank, built from dispersive chirps sliding downward in pitch, the actual
 mechanism of a real spring reverb's boing. Nothing is fetched, so nothing can
 fail to load.
 
+## Playing a song you already have
+
+`Open`, or drop a file anywhere on the page. Three kinds work.
+
+**A recording** — mp3, wav, m4a, ogg, flac, anything the browser can decode.
+It listens to it and works out what to play: the tempo from the onsets, the
+key and the chord under each bar from a chroma fold, and then a real shape for
+every chord and a strum to play them with.
+
+Be clear about what that is and is not. Pulling every individual note out of a
+finished mix is an open research problem, and the things that do it well are
+trained neural networks far larger than this whole page. This does what a
+guitarist does with a record: finds the tempo, the key, and the chord under
+each bar. That is well understood signal processing with no model in it, and it
+is right about nine times in ten on a clean recording of one instrument,
+decent on a small band, and approximate on a dense mix. So it tells you how
+sure it is, the chart fades the cells it is least confident about, and a low
+score says so in words instead of hiding it. Treat a busy mix as a first
+guess to correct by ear, which is what a chord sheet off the internet is
+anyway.
+
+Two things worth knowing about the method, both of which were wrong first and
+found by measuring. A note brings its own overtones with it and they are not
+it: the third harmonic of a G is a D and the fifth is a B, so a G chord folded
+straight onto twelve pitch classes reads its own overtones louder than its
+root and comes out as B minor. Every pitch class therefore gets credit for the
+harmonics it would have produced. And the beat phase says where *a* beat is,
+not which beat is beat one; getting that wrong smears two chords into every
+bar. So all four positions are tried and the one the harmony agrees with is
+kept, because a bar line in the right place makes every chord in it fit better
+at once.
+
+**A MIDI file** — every note, where the file put it. A MIDI file says which
+notes and when, never where on the neck, and that is the whole problem: each
+pitch can be played in up to six places, a string sounds one note at a time,
+and a hand reaches about four frets. Each note is given a string and a fret by
+what it costs the hand to reach, preferring an open string, staying in
+position, and avoiding taking a string that is still ringing. A part outside
+the guitar's range is moved by whole octaves to where the fewest notes fall off
+the end.
+
+**A chord sheet** — plain text, `| G | D | Em | C |`, or just chord names, with
+an optional `bpm:`, `pattern:` or `title:` line and `%` to repeat a bar. Names
+it does not know are reported rather than guessed at.
+
+## Seeing how it is played
+
+`Fingers` draws the fretting hand on the neck: palm under the board, a thumb
+hooked behind it, and one numbered finger per fret in use reaching up to the
+notes being held. A finger holding several strings at one fret is drawn barring
+them, because that is what it is doing. The four fingers are tinted apart, but
+dustily: this is a workbench under a lamp, and four saturated colours across
+the fretboard would be the loudest thing on the page. The other hand shows up
+near the bridge as the direction of the last stroke, or the string a single
+note was picked on, so a picked part shows both hands and not only the left
+one.
+
+Two things this got wrong first. Each knuckle has to sit under the fret its own
+finger is holding; spreading them by finger number instead put finger three's
+knuckle under finger one's fret and the two reached across each other, which is
+not a hand any more. And the finger number used to be drawn only when the fret
+dot was above a certain size, so on a narrower window it never appeared at all.
+
+A chord out of the reference data
+uses the fingering the data gives it. Anything else has no name and no
+fingering to look up, so one is derived: one finger per distinct fret, lowest
+first, which means several strings at the same fret come out as one finger
+barring them. That is the right reading for a handful of notes nobody has
+named, and it is how an imported file is shown as it plays. The hand travels
+with each note rather than being looked up when the note sounds, because the
+player queues ahead of the speakers.
+
 ## Composing a whole song
 
 `Compose` derives an entire arrangement from a single 32-bit number, and
@@ -184,6 +256,9 @@ node dev/verify.mjs        # the DSP engine, loaded straight out of index.html
 node dev/check-data.mjs    # the chord and tuning data
 node dev/song.mjs          # the arranger, pulled out of index.html
 node dev/song.mjs --show   # print a derived song as a chart
+node dev/import.mjs        # the MIDI and chord sheet importer
+node dev/listen.mjs        # what it hears in a recording, against signals it builds
+node dev/listen.mjs --show # print what it heard in each one
 node dev/keys.mjs          # every documented key, in a real browser
 node dev/qa.mjs            # pointers, the tape, the sequencer, resizing, knob extremes
 node dev/verify.mjs --wav  # renders dev/demo.wav if you would rather listen

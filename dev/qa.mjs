@@ -821,6 +821,188 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
   await page.evaluate(() => { songStop(); seq.metro = false; $('metroBtn').classList.remove('on'); maybeStopSeq(); });
 }
 
+/* ---------- 12. opening a file, and the hand it puts on the neck ----------
+   dev/import.mjs already checks that the importer picks playable places for
+   the notes. What can only be checked here is the rest of the journey: a real
+   file going through a real file input, the notes reaching the engine at the
+   right pitch, and the fingering on the neck being the fingering of the note
+   you can hear rather than the one queued a seventh of a second later. */
+{
+  /* the same synthetic file the node harness uses, built here so nothing
+     binary lives in the repo */
+  const vlq = (n) => { const o = [n & 0x7f]; n >>= 7; while (n > 0) { o.unshift((n & 0x7f) | 0x80); n >>= 7; } return o; };
+  const be16 = (n) => [(n >> 8) & 0xff, n & 0xff];
+  const be32 = (n) => [(n >> 24) & 0xff, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+  const tune = [];
+  /* a plain ascending line, one note per beat, inside the guitar's own range */
+  const pitches = [40, 45, 50, 55, 59, 64, 62, 57, 52, 47, 43, 48, 53, 58, 61, 64];
+  pitches.forEach((pitch, i) => tune.push({ at: i * 480, dur: 440, pitch }));
+
+  const body = [];
+  let last = 0;
+  const us = Math.round(60000000 / 120);
+  body.push(...vlq(0), 0xff, 0x51, 0x03, (us >> 16) & 0xff, (us >> 8) & 0xff, us & 0xff);
+  body.push(...vlq(0), 0xff, 0x58, 0x04, 4, 2, 24, 8);
+  const flat = [];
+  for (const e of tune) {
+    flat.push({ at: e.at, order: 1, bytes: [0x90, e.pitch, 92] });
+    flat.push({ at: e.at + e.dur, order: 2, bytes: [0x80, e.pitch, 0] });
+  }
+  flat.sort((a, b) => a.at - b.at || a.order - b.order);
+  for (const e of flat) { body.push(...vlq(e.at - last)); last = e.at; body.push(...e.bytes); }
+  body.push(...vlq(0), 0xff, 0x2f, 0x00);
+  const midiBytes = Buffer.from([
+    0x4d, 0x54, 0x68, 0x64, ...be32(6), ...be16(1), ...be16(1), ...be16(480),
+    0x4d, 0x54, 0x72, 0x6b, ...be32(body.length), ...body,
+  ]);
+
+  /* a chord sheet, which is the other thing a guitarist actually has */
+  const sheet = Buffer.from('title: Sheet Test\nbpm: 104\npattern: Folk down-up\n| G | D | Em | C |\n| Am | F | C | G |\n', 'utf8');
+
+  /* --- the MIDI path, through the real input --- */
+  await page.setInputFiles('#songFile', { name: 'ascend.mid', mimeType: 'audio/midi', buffer: midiBytes });
+  await wait(250);
+  const opened = await page.evaluate(() => ({
+    kind: song.data && song.data.kind,
+    title: song.data && song.data.title,
+    tempo: song.data && song.data.tempo,
+    notes: song.data && song.data.notes,
+    bars: song.data && song.data.barCount,
+    events: song.ev.length,
+    playable: !$('songBtn').disabled,
+    readout: $('songRd').textContent,
+  }));
+  check('a MIDI file dropped on the page becomes a playable song',
+    opened.kind === 'midi' && opened.events === 16 && opened.playable && opened.tempo === 120,
+    `${opened.title}: ${opened.events} notes, ${opened.bars} bars, ${opened.tempo} bpm`);
+  check('the readout says what it read', /ascend/.test(opened.readout) && /16 notes/.test(opened.readout), opened.readout);
+
+  /* --- the seam again: the pitches that reach the engine, and the hand --- */
+  const seam = await page.evaluate(() => {
+    const real = window.post;
+    const stream = [];
+    window.post = (m) => { stream.push(Object.assign({}, m)); };
+
+    song.i = 0;
+    song.queued = -1;
+    song.t0 = audio.ctx.currentTime + 0.2;
+    song.playing = true;
+    songSchedule(Infinity);
+    song.playing = false;
+    window.post = real;
+
+    const plucks = stream.filter((m) => m.t === 'pluck');
+    const out = { plucks: plucks.length, noAt: 0, wrongPitch: 0, examples: [], handWrong: 0 };
+    for (const m of stream) if (m.at === undefined) out.noAt++;
+
+    /* every note must sound the pitch the file asked for, at the place the
+       importer chose for it */
+    song.ev.forEach((e, i) => {
+      const want = noteFreq(e.string, e.fret);
+      const got = plucks[i];
+      if (!got || Math.abs(got.freq - want) > 0.02) {
+        out.wrongPitch++;
+        if (out.examples.length < 3) out.examples.push(`note ${i} wanted ${want.toFixed(2)} got ${got ? got.freq.toFixed(2) : 'nothing'}`);
+      }
+      /* and the hand it carries has to hold that note */
+      if (e.held[e.string] !== e.fret) out.handWrong++;
+      if (e.fingers.some((f, s) => (e.held[s] <= 0 ? f !== 0 : f < 1 || f > 4))) out.handWrong++;
+    });
+    return out;
+  });
+  check('every imported note reaches the engine with its own time on it', seam.noAt === 0, `${seam.noAt} fired at once`);
+  check('every imported note sounds the pitch the file asked for',
+    seam.wrongPitch === 0, seam.wrongPitch ? seam.examples.join('; ') : `${seam.plucks} notes`);
+  check('every note carries a hand that is actually holding it', seam.handWrong === 0, `${seam.handWrong} wrong`);
+
+  /* --- fingers mode, on the real neck --- */
+  const hand = await page.evaluate(async () => {
+    state.showFingers = true;
+    $('fingersBtn').classList.add('on');
+    await songStart();
+    /* far enough in to be past the open strings this tune starts on, so the
+       fingering is actually doing something */
+    const seen = [];
+    for (let i = 0; i < 24; i++) {
+      await new Promise((r) => setTimeout(r, 160));
+      if (state.fingers && state.fingers.some((f) => f > 0)) {
+        seen.push({ held: state.held.slice(), fingers: state.fingers.slice() });
+      }
+    }
+    const snap = {
+      held: state.held.slice(), fingers: state.fingers && state.fingers.slice(),
+      chord: state.chord, fretted: seen.length, sample: seen[0] || null,
+    };
+    songStop();
+    return snap;
+  });
+  check('playing an imported file puts a derived hand on the neck',
+    Array.isArray(hand.fingers) && hand.fingers.length === 6 && hand.chord === null
+    && hand.fingers.every((f, s) => (hand.held[s] <= 0 ? f === 0 : f >= 1 && f <= 4)),
+    `held ${hand.held.join(',')} fingers ${hand.fingers && hand.fingers.join(',')}`);
+  check('and names a finger for the notes that need one',
+    hand.fretted > 0 && hand.sample
+    && hand.sample.fingers.every((f, s) => (hand.sample.held[s] <= 0 ? f === 0 : f >= 1 && f <= 4)),
+    hand.sample ? `held ${hand.sample.held.join(',')} fingers ${hand.sample.fingers.join(',')} (${hand.fretted} moments)` : 'never fretted anything');
+
+  const toggled = await page.evaluate(() => {
+    $('fingersBtn').click();
+    const off = { on: state.showFingers, lit: $('fingersBtn').classList.contains('on') };
+    $('fingersBtn').click();
+    return { off, on: state.showFingers };
+  });
+  check('the fingers toggle turns the numbers off and back on',
+    toggled.off.on === false && toggled.off.lit === false && toggled.on === true,
+    JSON.stringify(toggled));
+
+  /* a named chord keeps the fingering the reference data gives it */
+  const named = await page.evaluate(() => {
+    const c = CHORDS.find((x) => x.name === 'C' && x.openPosition);
+    setChord(c);
+    return { derived: state.fingers, dataFingers: c.fingers, held: state.held.slice() };
+  });
+  check('a named chord uses the fingering from the reference data, not a derived one',
+    named.derived === null && String(named.held) === String([-1, 3, 2, 0, 1, 0]),
+    `state.fingers is ${JSON.stringify(named.derived)}`);
+
+  /* --- the chord sheet path --- */
+  await page.setInputFiles('#songFile', { name: 'sheet.txt', mimeType: 'text/plain', buffer: sheet });
+  await wait(250);
+  const chart = await page.evaluate(() => ({
+    kind: song.data.kind,
+    title: song.data.title,
+    tempo: song.data.tempo,
+    bars: song.data.bars.map((b) => b.chord).join(' '),
+    events: song.ev ? song.ev.length : 0,
+    pattern: song.data.sections[0].pattern,
+    strums: song.ev ? song.ev.filter((e) => e.kind === 'D' || e.kind === 'U').length : 0,
+  }));
+  check('a chord sheet becomes strummed bars',
+    chart.kind === 'chart' && chart.bars === 'G D Em C Am F C G' && chart.tempo === 104 && chart.strums > 0,
+    `${chart.title}: ${chart.bars} on ${chart.pattern}, ${chart.strums} strums`);
+
+  const sheetPlay = await page.evaluate(async () => {
+    await songStart();
+    await new Promise((r) => setTimeout(r, 1200));
+    const snap = { playing: song.playing, bar: song.bar, chord: state.chord && state.chord.name };
+    songStop();
+    return snap;
+  });
+  check('a chord sheet plays with real chord shapes on the neck',
+    sheetPlay.playing && sheetPlay.chord !== null, `bar ${sheetPlay.bar + 1}, holding ${sheetPlay.chord}`);
+
+  /* --- a file it cannot read says so and changes nothing --- */
+  const before = await page.evaluate(() => song.data.title);
+  await page.setInputFiles('#songFile', { name: 'junk.txt', mimeType: 'text/plain', buffer: Buffer.from('lorem ipsum dolor sit amet', 'utf8') });
+  await wait(200);
+  const refused = await page.evaluate(() => ({ readout: $('songRd').textContent, title: song.data.title }));
+  check('a file with nothing playable in it is refused out loud, and keeps the old song',
+    /Could not read junk\.txt/.test(refused.readout) && refused.title === before,
+    refused.readout);
+
+  await page.evaluate(() => { songStop(); });
+}
+
 console.log(errs.length ? `\npage errors:\n  ${errs.join('\n  ')}` : '\nno page errors');
 if (errs.length) fails++;
 console.log(`\n${fails ? fails + ' failing' : 'everything behaves'}`);
