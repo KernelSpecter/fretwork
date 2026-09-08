@@ -104,7 +104,10 @@ own name: no notes outside the chord, the required intervals present, a
 slash chord's stated bass actually the lowest note, no span wider than 4
 frets, no finger asked to hold two frets at once. It also recomputes every
 tuning frequency from equal temperament and checks that every progression
-only names chords that exist.
+only names chords that exist. The 16 progressions are what the arranger builds
+songs out of; `dev/song.mjs` additionally checks that each one names a key,
+that every key has a second progression to build a chorus from, that every key
+has a shape for its own tonic, and that every suggested pattern exists.
 
 ## Effects and the reverbs
 
@@ -118,6 +121,38 @@ by a decay envelope and a handful of early reflections, except the spring
 tank, built from dispersive chirps sliding downward in pitch, the actual
 mechanism of a real spring reverb's boing. Nothing is fetched, so nothing can
 fail to load.
+
+## Composing a whole song
+
+`Compose` derives an entire arrangement from a single 32-bit number, and
+`Play` performs it: intro, verses, choruses or a bridge, turnarounds into each
+section, and an ending. `Chart` writes it out as a lead sheet with the current
+bar lit. The seed goes in the address bar, so a song is a link.
+
+The harmony is not invented. Every progression in the reference data names its
+own key, and a section is only ever built from a progression already in that
+key, so a spliced arrangement cannot wander out of key however the dice fall.
+What is derived is the shape: which progression goes where, how many bars each
+section runs (always a whole number of cycles, so a phrase is never cut off
+mid-way), which strum pattern and how hard, where the turnarounds land, and
+where it stops.
+
+The choices are read off the data rather than hard-coded. A pattern's
+*density* is how many of its eight slots are struck, and its *peak accent* is
+how hard the hardest one is hit; nothing in the bar above 0.8 means no hand is
+hitting the whole chord, so that pattern gets fingerpicked, with the thumb
+holding the bass on the strong slots while the fingers walk up whatever else
+the shape is holding down. Sparse patterns go to the intro and outro, dense
+ones to the chorus. A chorus is taken up the neck on a barre where the chord
+has a shape up there. Verse two is played a little harder than verse one.
+
+The chord shapes are standard-tuning fingerings, so composing puts the
+instrument back to standard tuning with no capo rather than quietly playing
+something else and calling it a G.
+
+`ARRANGER` lives in its own `<script id="arranger">` block with no DOM, no
+audio and no clock in it, which is why `dev/song.mjs` can pull it straight out
+of the page and check it in node.
 
 ## The tape
 
@@ -147,6 +182,8 @@ They drive whichever Chrome is already installed. If there is not one,
 ```
 node dev/verify.mjs        # the DSP engine, loaded straight out of index.html
 node dev/check-data.mjs    # the chord and tuning data
+node dev/song.mjs          # the arranger, pulled out of index.html
+node dev/song.mjs --show   # print a derived song as a chart
 node dev/keys.mjs          # every documented key, in a real browser
 node dev/qa.mjs            # pointers, the tape, the sequencer, resizing, knob extremes
 node dev/verify.mjs --wav  # renders dev/demo.wav if you would rather listen

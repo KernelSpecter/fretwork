@@ -614,6 +614,213 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
     `role ${r.role}, value ${r.aria}`);
 }
 
+/* ---------- 11. the arranger, and the seam it has to cross ----------
+   The page schedules a seventh of a second ahead of the speakers, so the one
+   thing worth checking is not that the arranger derives a sane chart, which
+   dev/song.mjs already does in node, nor that the engine plays what it is
+   told, which dev/verify.mjs does. It is that the messages leaving this page
+   carry the chord belonging to the bar they land in, and carry their own
+   timing rather than firing the moment they were queued. So this records the
+   real message stream out of the real page. */
+{
+  /* the same seed must give the same song here as it does in node, which also
+     says the embedded reference data and dev/reference.json have not drifted */
+  const derived = await page.evaluate(() => {
+    const d = compose(20260907);
+    return {
+      title: d.title, tempo: d.tempo, barCount: d.barCount, seed: d.seed,
+      source: d.source, feel: d.feel,
+      chords: d.bars.map((b) => b.chord),
+      sections: d.sections.map((s) => `${s.name}:${s.bars}`),
+    };
+  });
+
+  const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+  const block = html.match(/<script id="arranger"[^>]*>([\s\S]*?)<\/script>/)[1];
+  const A = new Function(`${block}\nreturn ARRANGER;`)();
+  const REF = JSON.parse(fs.readFileSync(path.join(ROOT, 'dev', 'reference.json'), 'utf8'));
+  const node = A.derive(REF, 20260907);
+
+  check('the page derives the same song from a seed as node does',
+    derived.title === node.title && derived.tempo === node.tempo
+    && String(derived.chords) === String(node.bars.map((b) => b.chord)),
+    `${derived.title}, ${derived.tempo} bpm, ${derived.barCount} bars`);
+
+  check('composing lands a whole arrangement, not a loop',
+    derived.sections.length >= 5 && derived.barCount >= 20,
+    derived.sections.join(' '));
+
+  /* the chord shapes are standard-tuning fingerings, so composing has to put
+     the instrument back rather than play something else and call it a G */
+  const tuned = await page.evaluate(() => {
+    state.tuning = TUNINGS[2];
+    $('tuneSel').value = '2';
+    applyTuning();
+    setCapo(3);
+    const d = compose(4242);
+    return { tuning: state.tuning.name, capo: state.capo, tempo: state.tempo, want: d.tempo, note: song.note };
+  });
+  check('composing returns to standard tuning with no capo',
+    tuned.tuning === 'Standard' && tuned.capo === 0 && tuned.note !== '',
+    `${tuned.tuning}, capo ${tuned.capo}, note "${tuned.note}"`);
+  check('composing takes the song’s tempo', tuned.tempo === tuned.want, `${tuned.tempo} vs ${tuned.want}`);
+
+  /* Now the seam. Record the stream instead of forwarding it: the engine is
+     covered elsewhere, and queueing a whole song into it at once would just
+     make a noise. */
+  const seam = await page.evaluate(() => {
+    const real = window.post;
+    const stream = [];
+    window.post = (m) => { stream.push(Object.assign({}, m)); };
+
+    compose(20260907);
+    const d = song.data;
+    song.i = 0;
+    song.queued = -1;
+    song.t0 = audio.ctx.currentTime + 0.2;
+    song.playing = true;
+    songSchedule(Infinity);          // queue the entire song
+    song.playing = false;
+    window.post = real;
+
+    const bar = (i) => ({ lo: songTime(i * d.beatsPerBar), hi: songTime((i + 1) * d.beatsPerBar) });
+    const out = {
+      msgs: stream.length, plucks: 0, noAt: 0, outOfBar: 0, wrongChord: 0,
+      chuckBars: 0, undamped: 0, examples: [],
+      barsHeard: new Set(), lastBarStart: -Infinity, barsOutOfOrder: 0,
+    };
+
+    /* every message in a scheduled song carries its own moment */
+    for (const m of stream) if (m.at === undefined) out.noAt++;
+
+    /* the windows in which a chuck is holding everything down */
+    const chucks = stream
+      .filter((m) => m.t === 'allmute' && m.a > 0.9 && m.at !== undefined)
+      .map((m) => ({ from: m.at, to: m.at + 0.09 }));
+
+    for (const m of stream) {
+      if (m.t === 'mute' && m.a === 0 && m.at !== undefined
+          && chucks.some((c) => m.at >= c.from - 1e-6 && m.at < c.to - 1e-6)) {
+        out.undamped++;
+      }
+      if (m.t !== 'pluck' || m.at === undefined) continue;
+      out.plucks++;
+
+      const barSec = (d.beatsPerBar * 60) / state.tempo;
+      const found = Math.floor((m.at - song.t0 + 1e-3) / barSec);
+      if (found < 0 || found >= d.barCount) { out.outOfBar++; continue; }
+      out.barsHeard.add(found);
+
+      /* The frequency has to be one that bar's own shape can make. A hand
+         takes a moment to cross six strings, so a stroke struck on the last
+         slot of the bar before is still arriving here: that one is allowed to
+         be the previous chord, and only within the time a strum takes. */
+      const playable = (i) => {
+        const bb = d.bars[i];
+        if (!bb) return false;
+        for (let s = 0; s < 6; s++) {
+          if (bb.frets[s] < 0) continue;
+          if (Math.abs(noteFreq(s, bb.frets[s]) - m.freq) < 0.02) return true;
+        }
+        return false;
+      };
+      const into = m.at - (song.t0 + found * barSec);
+      const ok = playable(found) || (into < 0.2 && playable(found - 1));
+      if (!ok) {
+        out.wrongChord++;
+        if (out.examples.length < 4) {
+          out.examples.push(`bar ${found} (${d.bars[found].chord}) heard ${m.freq.toFixed(2)} Hz at +${(into * 1000).toFixed(0)}ms`);
+        }
+      }
+    }
+
+    out.chuckBars = chucks.length;
+    out.bars = d.barCount;
+    out.heard = out.barsHeard.size;
+    delete out.barsHeard;
+    return out;
+  });
+
+  check('a scheduled song posts nothing without a time on it', seam.noAt === 0, `${seam.noAt} of ${seam.msgs} messages fired at once`);
+  check('every note lands inside the bar it belongs to', seam.outOfBar === 0, `${seam.outOfBar} strays`);
+  check('every note is one its own bar’s chord can make',
+    seam.wrongChord === 0,
+    seam.wrongChord ? seam.examples.join('; ') : `${seam.plucks} notes over ${seam.heard}/${seam.bars} bars`);
+  check('every bar of the chart gets played', seam.heard === seam.bars, `${seam.heard} of ${seam.bars}`);
+  check('a chuck stays damped through its own strokes', seam.undamped === 0, `${seam.undamped} strokes lifted the scrape`);
+
+  /* and it really plays: run a few bars through the actual engine */
+  await clearWorst();
+  const played = await page.evaluate(async () => {
+    compose(20260907);
+    state.tempo = 160;
+    await songStart();
+    const first = song.data.bars[0].chord;
+    await new Promise((r) => setTimeout(r, 2600));
+    return {
+      playing: song.playing,
+      bar: song.bar,
+      first,
+      now: song.bar >= 0 ? song.data.bars[song.bar].chord : null,
+      held: state.held.slice(),
+      readout: $('songRd').textContent,
+    };
+  });
+  const heard = await worst();
+  check('the song plays and walks forward through its bars', played.playing && played.bar > 0, `reached bar ${played.bar + 1}`);
+  check('the neck follows the chart', String(played.held) === String(await page.evaluate((b) => song.data.bars[b].frets, played.bar)),
+    `bar ${played.bar + 1} is ${played.now}`);
+  check('the readout says where it is', /bar \d+ of \d+/.test(played.readout), played.readout);
+  check('a playing song makes a sound and no NaN', heard.peak > 0.01 && heard.nan === 0, `peak ${heard.peak.toFixed(3)}, ${heard.nan} NaN`);
+
+  /* the chart is the song written down */
+  const chart = await page.evaluate(() => {
+    $('chartBtn').click();
+    const cells = [...document.querySelectorAll('#chartBody .cbar')];
+    return {
+      open: $('chartSheet').classList.contains('open'),
+      cells: cells.length,
+      bars: song.data.barCount,
+      names: cells.map((c) => c.textContent),
+      chart: song.data.bars.map((b) => b.chord),
+      lit: document.querySelectorAll('#chartBody .cbar.on').length,
+      rings: document.querySelectorAll('#chartBody .cbar.ring').length,
+    };
+  });
+  check('the chart writes out one cell per bar, in order',
+    chart.open && chart.cells === chart.bars && String(chart.names) === String(chart.chart),
+    `${chart.cells} cells for ${chart.bars} bars`);
+  check('the chart marks where the song has got to and where it ends',
+    chart.lit === 1 && chart.rings === 1, `${chart.lit} lit, ${chart.rings} ending`);
+
+  /* stopping stops, and hands the guitar back */
+  const stopped = await page.evaluate(() => {
+    $('chartSheet').classList.remove('open');
+    songStop();
+    return { playing: song.playing, timer: seq.timer, readout: $('songRd').textContent };
+  });
+  check('stopping the song stops the clock with it', !stopped.playing && stopped.timer === 0, `timer ${stopped.timer}`);
+
+  /* a song and the pattern strummer are two answers to the same question */
+  const exclusive = await page.evaluate(async () => {
+    $('strumBtn').click();
+    const wasOn = seq.on;
+    await songStart();
+    const after = { seqOn: seq.on, lit: $('strumBtn').classList.contains('on'), songOn: song.playing };
+    songStop();
+    return { wasOn, after };
+  });
+  check('starting a song turns the strum pattern off',
+    exclusive.wasOn && !exclusive.after.seqOn && !exclusive.after.lit && exclusive.after.songOn,
+    JSON.stringify(exclusive.after));
+
+  /* the seed in the address bar is the song */
+  const seeded = await page.evaluate(() => ({ hash: location.hash, seed: song.data.seed }));
+  check('the seed goes in the address bar', seeded.hash === '#s=' + seeded.seed, `${seeded.hash} vs seed ${seeded.seed}`);
+
+  await page.evaluate(() => { songStop(); seq.metro = false; $('metroBtn').classList.remove('on'); maybeStopSeq(); });
+}
+
 console.log(errs.length ? `\npage errors:\n  ${errs.join('\n  ')}` : '\nno page errors');
 if (errs.length) fails++;
 console.log(`\n${fails ? fails + ' failing' : 'everything behaves'}`);

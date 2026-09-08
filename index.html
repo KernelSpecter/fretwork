@@ -189,6 +189,20 @@ select:focus-visible,.btn:focus-visible{outline:1px solid var(--lamp);outline-of
 .keys span{color:#a3987f}
 .filters{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:12px}
 
+/* the chart: a lead sheet for whatever the arranger just derived */
+.crow{display:grid;grid-template-columns:82px 1fr;gap:8px;padding:6px 0;
+  border-top:1px solid rgba(255,255,255,.05);align-items:start}
+.crow:first-of-type{border-top:0}
+.clab{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#b3a691;padding-top:3px}
+.clab small{display:block;letter-spacing:.04em;text-transform:none;color:var(--ink-faint);font-size:9.5px;margin-top:2px}
+.cbars{display:flex;flex-wrap:wrap;gap:3px}
+.cbar{font-family:var(--mono);font-size:11px;min-width:44px;text-align:center;
+  padding:4px 5px;border-radius:3px;color:#c8bda6;
+  background:#1d1a15;border:1px solid #0a0908}
+.cbar.turn{border-bottom-color:#6a5a3a}
+.cbar.ring{border-color:#4a4032;color:#e2d6b6}
+.cbar.on{background:linear-gradient(#4a3a18,#33270f);border-color:#7a6330;color:#f4e6bf}
+
 /* short windows: give the guitar what room there is */
 @media (max-height:420px){
   header{height:34px}
@@ -901,6 +915,19 @@ registerProcessor('fretwork-tape', TapeProcessor);
         <button class="btn mini" id="strumBtn">Auto</button>
       </div>
     </div>
+    <div class="bank">
+      <div class="eng">Song</div>
+      <div class="stack">
+        <div class="row">
+          <button class="btn mini" id="composeBtn">Compose</button>
+          <button class="btn mini" id="songBtn" disabled>Play</button>
+          <button class="btn mini" id="chartBtn" disabled>Chart</button>
+        </div>
+        <div class="row">
+          <span class="eng" id="songRd" style="min-width:170px"></span>
+        </div>
+      </div>
+    </div>
     <div class="bank" style="flex:1 0 auto">
       <div class="eng">Tape</div>
       <div class="stack">
@@ -939,6 +966,364 @@ registerProcessor('fretwork-tape', TapeProcessor);
   <div class="keys" id="keyList"></div>
 </div></div>
 
+<div class="sheet" id="chartSheet"><div class="card" style="position:relative">
+  <button class="btn close" data-close>Close</button>
+  <h2 id="chartHead">Chart</h2>
+  <div class="sub" id="chartSub"></div>
+  <div id="chartBody"></div>
+</div></div>
+
+<script id="arranger">
+/* fretwork arranger
+   Derives a whole song from one integer and compiles it into a flat list of
+   timed events. Pure: no DOM, no audio, no clock, and one global. The page
+   plays whatever comes out of here, and dev/song.mjs pulls this block
+   straight out of index.html and checks it in node, the same way
+   dev/verify.mjs does with the string engine.
+
+   The harmony is not invented. Every progression in the reference data names
+   its own key, and a section is only ever built from a progression in the key
+   the song is already in, so a spliced arrangement cannot wander out of key
+   however the dice fall. What is derived is the shape of the song: which
+   progressions go where, how long each section runs, which pattern and how
+   hard it is played, where the turnarounds land, and where it ends. */
+const ARRANGER = (() => {
+  'use strict';
+
+  const BEATS_PER_BAR = 4;
+  const SLOTS_PER_BAR = 8;    // eighths, which is what the pattern data is written in
+  const SWING = 0.16;         // beats of delay on an off eighth, 0.32 of an eighth
+  const MAX_FRET = 12;        // the neck only draws 12 frets on a narrow screen
+  const RING_BEATS = 4;       // the last chord is left alone for this long
+
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+  /* mulberry32. A song has to come back the same from the same number, and
+     Math.random cannot be seeded. */
+  function rng(seed) {
+    let a = (seed >>> 0) || 0x9e3779b9;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function pick(r, arr) { return arr[Math.min(arr.length - 1, Math.floor(r() * arr.length))]; }
+
+  /* ---------------------------------------------------------------- the data */
+
+  /* "I V vi IV in G" is in G. The key is in the name because the reference
+     data puts it there; a progression without one is left out rather than
+     guessed at. */
+  function keyOf(prog) {
+    const m = /\bin\s+([A-G][#b]?m?)\s*$/.exec(prog.name);
+    return m ? m[1] : null;
+  }
+  const isMinorKey = (key) => /m$/.test(key);
+  const cycleBars = (prog) => prog.chords.length * prog.barsPerChord;
+
+  /* Voicings, indexed by the name a progression would call them. "G (E shape)"
+     is one voicing of G; the parenthetical says which, and is not part of the
+     name anyone plays from. */
+  function shapeIndex(ref) {
+    const by = new Map();
+    ref.chordShapes.forEach((c, i) => {
+      const bare = c.name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+      if (!by.has(bare)) by.set(bare, []);
+      by.get(bare).push({ name: bare, frets: c.frets, open: !!c.openPosition, index: i });
+    });
+    return by;
+  }
+
+  /* A guitarist plays the verse in open position and takes the chorus up the
+     neck on a barre. Same chords, more weight. Where a chord has no shape up
+     there it stays where it is: the colour is a bonus, never a requirement. */
+  function voice(idx, name, high) {
+    const all = idx.get(name);
+    if (!all || !all.length) return null;
+    const fits = (c) => Math.max.apply(null, c.frets) <= MAX_FRET;
+    const open = all.filter((c) => c.open && fits(c));
+    const up = all.filter((c) => !c.open && fits(c));
+    const any = all.filter(fits);
+    const from = high && up.length ? up : (open.length ? open : (any.length ? any : all));
+    return from[0];
+  }
+
+  /* Density is how many of the eight slots are struck. Peak accent is how hard
+     the hardest one is hit: nothing in the bar above 0.8 means no hand is
+     hitting the whole chord, which is a picked pattern rather than a strummed
+     one. Both are read off the numbers, so a renamed pattern still behaves the
+     way it sounds. */
+  const density = (pat) => pat.slots.filter((s) => s !== '-').length;
+  const peak = (pat) => Math.max.apply(null, pat.accents);
+  const isPicked = (pat) => peak(pat) <= 0.8;
+
+  function patternPool(ref, feel) {
+    const same = ref.strumPatterns.filter((p) => p.feel === feel);
+    const list = (same.length ? same : ref.strumPatterns).slice();
+    list.sort((a, b) => density(a) - density(b) || a.name.localeCompare(b.name));
+    return list;
+  }
+
+  /* ---------------------------------------------------------------- the plan */
+
+  const ROLES = {
+    Intro:  { target: 4, dyn: 0.56, band: 0.0 },
+    Verse:  { target: 8, dyn: 0.74, band: 0.5 },
+    Chorus: { target: 8, dyn: 0.96, band: 1.0 },
+    Bridge: { target: 8, dyn: 0.80, band: 0.35 },
+    Outro:  { target: 4, dyn: 0.52, band: 0.0 },
+  };
+
+  const FORMS = [
+    { name: 'verse and chorus', plan: ['Intro', 'Verse', 'Chorus', 'Verse', 'Chorus', 'Outro'] },
+    { name: 'AABA',             plan: ['Intro', 'Verse', 'Verse', 'Bridge', 'Verse', 'Outro'] },
+    { name: 'through a bridge', plan: ['Intro', 'Verse', 'Chorus', 'Bridge', 'Chorus', 'Outro'] },
+    { name: 'double chorus',    plan: ['Intro', 'Verse', 'Chorus', 'Chorus', 'Outro'] },
+  ];
+
+  const TEMPOS = [60, 70, 80, 90, 96, 104, 112, 120, 132, 144, 160];
+
+  /* A 12 bar blues wants blues tempo, a swung pattern wants room to swing, and
+     a bar with eight onsets in it does not want to be at 160. Narrow the list,
+     then let the seed choose inside it. */
+  function chooseTempo(r, cycle, feel, dens) {
+    let lo = 76, hi = 132;
+    if (feel === 'swung') { lo = 66; hi = 108; }
+    if (cycle >= 12) { lo = 76; hi = 104; }
+    if (dens >= 7) hi = Math.min(hi, 112);
+    const inRange = TEMPOS.filter((t) => t >= lo && t <= hi);
+    return pick(r, inRange.length ? inRange : TEMPOS);
+  }
+
+  function rotate(prog, n) {
+    const k = ((n % prog.chords.length) + prog.chords.length) % prog.chords.length;
+    return {
+      name: prog.name + ' (from bar ' + (k * prog.barsPerChord + 1) + ')',
+      chords: prog.chords.slice(k).concat(prog.chords.slice(0, k)),
+      barsPerChord: prog.barsPerChord,
+      suggestedPattern: prog.suggestedPattern,
+      rotated: true,
+    };
+  }
+
+  /* One bar per bar, chords repeated to fill. */
+  function fill(prog, bars) {
+    const out = [];
+    for (let b = 0; b < bars; b++) {
+      out.push(prog.chords[Math.floor(b / prog.barsPerChord) % prog.chords.length]);
+    }
+    return out;
+  }
+  /* A section is a whole number of cycles, so a phrase never gets cut off in
+     the middle of itself. */
+  function fitted(prog, target) {
+    const c = cycleBars(prog);
+    return c * Math.max(1, Math.round(target / c));
+  }
+
+  /* ---------------------------------------------------------------- derive */
+
+  function derive(ref, seed, opts) {
+    const o = opts || {};
+    const r = rng(seed);
+    const idx = shapeIndex(ref);
+
+    const keyed = ref.progressions
+      .map((p) => ({ prog: p, key: keyOf(p) }))
+      .filter((x) => x.key && x.prog.chords.every((n) => voice(idx, n, false)));
+    if (!keyed.length) return null;
+
+    const chosen = pick(r, keyed);
+    const key = chosen.key;
+    const minor = isMinorKey(key);
+    const family = keyed.filter((x) => x.key === key).map((x) => x.prog);
+    const base = chosen.prog;
+    const cycle = cycleBars(base);
+
+    /* The chorus wants to be somewhere else in the same key. Another
+       progression in that key is the honest way to get there; failing that,
+       the same one started from a different bar, which is what a I V vi IV
+       turning into a vi IV I V actually is. */
+    const spare = 1 + Math.floor(r() * Math.max(1, base.chords.length - 1));
+    let rest = family.filter((p) => p !== base);
+    /* A chorus is a hook, so it wants a cycle short enough to come round
+       twice. A twelve bar blues makes a fine verse and a long chorus. */
+    const compact = rest.filter((p) => cycleBars(p) <= 8);
+    const chorusProg = compact.length ? pick(r, compact)
+      : (rest.length ? pick(r, rest) : rotate(base, spare));
+    rest = rest.filter((p) => p !== chorusProg);
+    const bridgeProg = rest.length ? pick(r, rest) : rotate(base, spare + 1);
+
+    const suggested = ref.strumPatterns.find((p) => p.name === base.suggestedPattern) || ref.strumPatterns[0];
+    const pool = patternPool(ref, suggested.feel);
+    const at = (band) => pool[clamp(Math.round(band * (pool.length - 1)), 0, pool.length - 1)];
+
+    const tempo = o.tempo || chooseTempo(r, cycle, suggested.feel, density(suggested));
+    const form = pick(r, FORMS);
+    const tonic = voice(idx, key, false) || voice(idx, base.chords[0], false);
+
+    const sections = [];
+    const bars = [];
+    const seen = {};
+
+    form.plan.forEach((role, si) => {
+      const spec = ROLES[role];
+      const prog = role === 'Chorus' ? chorusProg : role === 'Bridge' ? bridgeProg : base;
+      seen[role] = (seen[role] || 0) + 1;
+
+      /* An intro is a lead-in, not a whole phrase, so it is allowed to be a
+         partial cycle. An outro is a cadence: the last two chords of the
+         cycle, and then home. */
+      let names;
+      if (role === 'Intro') {
+        names = fill(prog, Math.min(cycleBars(prog), spec.target));
+      } else if (role === 'Outro') {
+        const tail = fill(prog, cycleBars(prog)).slice(-2);
+        names = tail.concat([tonic ? tonic.name : prog.chords[0]]);
+      } else {
+        names = fill(prog, fitted(prog, spec.target));
+      }
+
+      /* Verse two is a little louder than verse one. Nobody plays the same
+         section twice at the same weight. */
+      const pat = role === 'Verse' ? suggested : at(spec.band);
+      const dyn = clamp(spec.dyn * (1 + 0.05 * (seen[role] - 1)), 0.2, 1);
+      const high = spec.band >= 0.9;
+      const first = bars.length;
+
+      names.forEach((name, bi) => {
+        const sh = voice(idx, name, high) || voice(idx, name, false);
+        bars.push({
+          chord: name,
+          shape: sh ? sh.index : -1,
+          frets: sh ? sh.frets.slice() : [-1, -1, -1, -1, -1, -1],
+          pat: pat,
+          patName: pat.name,
+          dyn: dyn,
+          section: si,
+          sectionName: role,
+          /* the last bar of a section turns around into the next one */
+          fill: bi === names.length - 1 && si < form.plan.length - 1,
+          ring: false,
+        });
+      });
+
+      sections.push({
+        name: role,
+        pass: seen[role],
+        from: first,
+        bars: names.length,
+        chords: names.slice(),
+        pattern: pat.name,
+        picked: isPicked(pat),
+        dyn: dyn,
+        source: prog.name,
+      });
+    });
+
+    /* The song ends. One last chord, hit properly, and then left alone. */
+    if (bars.length) {
+      const last = bars[bars.length - 1];
+      last.ring = true;
+      last.fill = false;
+      last.dyn = clamp(ROLES.Outro.dyn + 0.35, 0.2, 1);
+    }
+
+    return {
+      seed: seed >>> 0,
+      key: key,
+      minor: minor,
+      tonic: tonic ? tonic.name : null,
+      tempo: tempo,
+      feel: suggested.feel,
+      form: form.name,
+      title: key + (minor ? ' minor' : ' major') + ', ' + form.name,
+      source: base.name,
+      cycle: cycle,
+      beatsPerBar: BEATS_PER_BAR,
+      sections: sections,
+      bars: bars,
+      barCount: bars.length,
+    };
+  }
+
+  /* ---------------------------------------------------------------- compile */
+
+  /* Every event carries the chord it belongs to. The player runs a seventh of
+     a second ahead of what you can hear, so an event that read the currently
+     held chord when it fired would strum the wrong one across every bar line.
+     That seam is the whole reason this hands back frets and not just slots. */
+  function compile(song) {
+    const events = [];
+    if (!song || !song.bars.length) return { events: events, endBeat: 0 };
+
+    for (let b = 0; b < song.bars.length; b++) {
+      const bar = song.bars[b];
+      const pat = bar.pat;
+      const start = b * BEATS_PER_BAR;
+      const picked = isPicked(pat);
+      const sounding = [];
+      for (let s = 0; s < 6; s++) if (bar.frets[s] >= 0) sounding.push(s);
+      if (!sounding.length) continue;
+
+      if (bar.ring) {
+        events.push({
+          beat: start, kind: 'D', vel: clamp(bar.dyn, 0.06, 1),
+          bar: b, frets: bar.frets, chord: bar.chord,
+        });
+        continue;
+      }
+
+      let finger = 1;
+      for (let i = 0; i < SLOTS_PER_BAR; i++) {
+        let slot = pat.slots[i];
+        let acc = pat.accents[i];
+
+        /* the turnaround: two extra strokes in the gap at the end of the bar */
+        if (bar.fill && i >= 6 && slot === '-') { slot = i === 6 ? 'U' : 'D'; acc = 0.58; }
+        if (slot === '-') continue;
+
+        const beat = start + i * 0.5 + (pat.feel === 'swung' && i % 2 === 1 ? SWING : 0);
+        const vel = clamp(acc * bar.dyn, 0.06, 1);
+
+        if (picked && slot !== 'X') {
+          /* the thumb keeps the bass going on the strong slots while the
+             fingers walk up whatever else the shape is holding down */
+          let s;
+          if (i % 4 === 0) {
+            s = sounding[0];
+          } else {
+            s = sounding[Math.min(sounding.length - 1, finger)];
+            finger = finger + 1 >= sounding.length ? 1 : finger + 1;
+          }
+          events.push({
+            beat: beat, kind: 'P', string: s, fret: bar.frets[s],
+            vel: clamp(vel * (i % 4 === 0 ? 1 : 0.82), 0.06, 1),
+            bar: b, frets: bar.frets, chord: bar.chord,
+          });
+        } else {
+          events.push({ beat: beat, kind: slot, vel: vel, bar: b, frets: bar.frets, chord: bar.chord });
+        }
+      }
+    }
+
+    events.sort((a, b) => a.beat - b.beat || a.bar - b.bar);
+    return { events: events, endBeat: song.bars.length * BEATS_PER_BAR + RING_BEATS };
+  }
+
+  return {
+    derive: derive, compile: compile,
+    keyOf: keyOf, cycleBars: cycleBars, density: density, peak: peak,
+    isPicked: isPicked, shapeIndex: shapeIndex, voice: voice, rotate: rotate,
+    patternPool: patternPool, rng: rng,
+    BEATS_PER_BAR: BEATS_PER_BAR, SLOTS_PER_BAR: SLOTS_PER_BAR,
+    SWING: SWING, MAX_FRET: MAX_FRET, RING_BEATS: RING_BEATS,
+    FORMS: FORMS, ROLES: ROLES,
+  };
+})();
+</script>
 <script>'use strict';
 /* fretwork, the part you can see and touch. The sound itself lives in the
    engine block above; everything here decides what to tell it. */
@@ -1370,11 +1755,18 @@ function pluck(s, fret, vel, opts) {
     msg.vel *= 0.85;
   }
   if (opts.slide) { msg.slide = opts.slide; }
-  if (opts.at) msg.at = opts.at;
+  if (opts.at !== undefined) msg.at = opts.at;
   post(msg);
-  if (state.palm) post({ t: 'mute', s, a: 0.72 });
-  else post({ t: 'mute', s, a: 0 });
-  fx.hit(s, msg.vel);
+  /* The choke that follows a note has to travel with it. A note scheduled a
+     seventh of a second out would otherwise reset the damping now, while the
+     bar before is still ringing under it. */
+  const after = { t: 'mute', s, a: opts.damp !== undefined ? opts.damp : (state.palm ? 0.72 : 0) };
+  if (msg.at !== undefined) after.at = msg.at;
+  post(after);
+  /* and the string does not start glowing before you can hear it */
+  const wait = msg.at === undefined ? 0 : (msg.at - audio.ctx.currentTime) * 1000;
+  if (wait <= 4) fx.hit(s, msg.vel);
+  else setTimeout(() => fx.hit(s, msg.vel), wait);
 }
 
 /* An upstroke is not a downstroke played backwards. The hand comes up off
@@ -1410,21 +1802,43 @@ function strum(dir, vel, frets, when) {
     });
     k++;
   }
-  for (let i = 0; i < 6; i++) if (f[i] < 0) post({ t: 'mute', s: i, a: 1 });
+  for (let i = 0; i < 6; i++) {
+    if (f[i] >= 0) continue;
+    const dead = { t: 'mute', s: i, a: 1 };
+    if (when !== undefined) dead.at = base;
+    post(dead);
+  }
   state.lastPluckAt = performance.now();
   hideHint();
 }
 
-function chuck(vel, when) {
-  /* the percussive scrape: strum with everything damped */
+/* The percussive scrape: strum with everything damped. The damping is not a
+   side effect here, it is the sound, so a scheduled chuck has to carry its own
+   mute and release with it. Posting them now for a stroke 140ms away choked
+   whatever was ringing and then lifted again before the chuck arrived, which
+   left the X in a pattern sounding like a quiet ordinary strum. */
+function chuck(vel, when, frets) {
   if (!audio.ready) return;
-  post({ t: 'allmute', a: 0.96 });
+  const f = frets || state.held;
   const base = when === undefined ? audio.ctx.currentTime + 0.004 : when;
-  for (let s = 0; s < 6; s++) {
-    if (state.held[s] < 0) continue;
-    pluck(s, state.held[s], vel * 0.5, { at: base + s * 0.0035 });
+  const grab = { t: 'allmute', a: 0.96 };
+  const release = { t: 'allmute', a: state.palm ? 0.72 : 0 };
+  if (when === undefined) {
+    post(grab);
+    setTimeout(() => post(release), 90);
+  } else {
+    grab.at = base;
+    release.at = base + 0.09;
+    post(grab);
+    post(release);
   }
-  setTimeout(() => post({ t: 'allmute', a: state.palm ? 0.72 : 0 }), 90);
+  for (let s = 0; s < 6; s++) {
+    if (f[s] < 0) continue;
+    /* and each stroke has to leave the damping where the chuck put it: a
+       pluck that lifted its own string back to undamped, which is what it does
+       for an ordinary note, cancelled the scrape one string at a time. */
+    pluck(s, f[s], vel * 0.5, { at: base + s * 0.0035, damp: 0.96 });
+  }
 }
 
 /* ================================================================
@@ -2438,6 +2852,7 @@ function scheduler() {
     seq.next += eighth();
     seq.slot++;
   }
+  if (song.playing) songSchedule(ctx.currentTime + look);
 }
 
 function click(when, strong) {
@@ -2458,7 +2873,220 @@ function startSeq() {
   seq.timer = setInterval(scheduler, 25);
 }
 function maybeStopSeq() {
-  if (!seq.on && !seq.metro && seq.timer) { clearInterval(seq.timer); seq.timer = 0; }
+  if (!seq.on && !seq.metro && !song.playing && seq.timer) { clearInterval(seq.timer); seq.timer = 0; }
+}
+
+/* ================================================================
+   8b. songs
+   ================================================================ */
+
+/* The arranger hands back a chart and a flat list of events on a beat grid.
+   Everything here does is turn beats into times on the audio clock, hand the
+   engine the frets that belong to each one, and move the neck over to the new
+   chord at the moment you can hear it rather than when it was queued. */
+const song = {
+  data: null, ev: [], i: 0, t0: 0, endBeat: 0,
+  playing: false, bar: -1, queued: -1, note: '',
+};
+
+const beatSec = () => 60 / state.tempo;
+const songTime = (beat) => song.t0 + beat * beatSec();
+
+function songLength(d) { return Math.round((d.barCount * d.beatsPerBar * 60) / d.tempo); }
+
+/* The chord shapes are standard-tuning fingerings, so a song derived from them
+   is only the song the chart says it is in standard tuning with no capo.
+   Composing puts the instrument back there rather than quietly playing
+   something else and calling it a G. */
+function standardise() {
+  let moved = false;
+  if (state.tuning !== TUNINGS[0]) {
+    state.tuning = TUNINGS[0];
+    $('tuneSel').value = '0';
+    applyTuning();
+    moved = true;
+  }
+  if (state.capo !== 0) { setCapo(0); moved = true; }
+  return moved;
+}
+
+function compose(seed) {
+  const want = seed === undefined ? ((Math.random() * 0xffffffff) >>> 0) || 1 : (seed >>> 0);
+  const data = ARRANGER.derive(REF, want);
+  if (!data) return null;
+  const built = ARRANGER.compile(data);
+
+  songStop();
+  const moved = standardise();
+
+  song.data = data;
+  song.ev = built.events;
+  song.endBeat = built.endBeat;
+  song.note = moved ? 'standard tuning' : '';
+
+  state.tempo = data.tempo;
+  const opt = [...$('tempoSel').options].find((o) => o.value === String(data.tempo));
+  if (opt) $('tempoSel').value = opt.value;
+
+  const first = CHORDS[data.bars[0].shape];
+  if (first) { setChord(first); renderRail(); }
+
+  $('songBtn').disabled = false;
+  $('chartBtn').disabled = false;
+  buildChart();
+  songReadout();
+  /* the seed is the song, so it goes in the address bar. file:// refuses. */
+  try { history.replaceState(null, '', '#s=' + data.seed); } catch (e) { /* not fatal */ }
+  return data;
+}
+
+async function songStart() {
+  if (!song.data && !compose()) return;
+  if (!audio.ready && !(await startAudio())) return;
+
+  /* the pattern strummer and a song are two answers to the same question */
+  if (seq.on) { seq.on = false; $('strumBtn').classList.remove('on'); }
+
+  song.i = 0;
+  song.bar = -1;
+  song.queued = -1;
+  song.note = '';
+  song.playing = true;
+
+  startSeq();
+  /* the click and bar one start on the same downbeat */
+  seq.next = audio.ctx.currentTime + 0.12;
+  seq.slot = 0;
+  song.t0 = seq.next;
+
+  const first = CHORDS[song.data.bars[0].shape];
+  if (first) setChord(first);
+
+  $('songBtn').classList.add('on');
+  $('songBtn').textContent = 'Stop';
+  hideHint();
+  songReadout();
+}
+
+function songStop() {
+  const was = song.playing;
+  song.playing = false;
+  song.i = 0;
+  song.bar = -1;
+  song.queued = -1;
+  const b = $('songBtn');
+  if (b) { b.classList.remove('on'); b.textContent = 'Play'; }
+  if (was) maybeStopSeq();
+  markChart(-1);
+  songReadout();
+}
+
+/* Queue everything that falls before the horizon. Each event carries its own
+   frets, so a bar line inside the lookahead window strums the chord that
+   belongs to the new bar and not the one still on the neck. */
+function songSchedule(horizon) {
+  while (song.i < song.ev.length) {
+    const e = song.ev[song.i];
+    const when = songTime(e.beat);
+    if (when > horizon) return;
+
+    if (e.bar !== song.queued) { song.queued = e.bar; showBarAt(e.bar, when); }
+
+    if (e.kind === 'D') strum(1, e.vel, e.frets, when);
+    else if (e.kind === 'U') strum(-1, e.vel, e.frets, when);
+    else if (e.kind === 'X') chuck(e.vel, when, e.frets);
+    else if (e.kind === 'P') pluck(e.string, e.fret, e.vel, { at: when, posBias: 0.92 });
+
+    song.i++;
+  }
+  /* all queued: the song is over once the last chord has had its ring */
+  if (audio.ctx.currentTime >= songTime(song.endBeat)) songStop();
+}
+
+/* The neck moves when the bar can be heard, not when it was scheduled. */
+function showBarAt(b, when) {
+  const wait = Math.max(0, (when - audio.ctx.currentTime) * 1000);
+  setTimeout(() => {
+    if (!song.playing || !song.data) return;
+    const bar = song.data.bars[b];
+    if (!bar) return;
+    song.bar = b;
+    const c = CHORDS[bar.shape];
+    if (c) setChord(c);
+    else { state.chord = null; state.held = bar.frets.slice(); }
+    songReadout();
+    markChart(b);
+  }, wait);
+}
+
+function songReadout() {
+  const el = $('songRd');
+  if (!el) return;
+  const d = song.data;
+  if (!d) { el.textContent = 'Nothing composed yet'; return; }
+  if (song.playing && song.bar >= 0) {
+    const bar = d.bars[song.bar];
+    el.textContent = `${bar.sectionName} · bar ${song.bar + 1} of ${d.barCount} · ${bar.chord}`;
+    return;
+  }
+  el.textContent = `${d.title} · ${d.tempo} bpm · ${songLength(d)}s`
+    + (song.note ? ' · ' + song.note : '');
+}
+
+/* ---------- the chart ---------- */
+
+function buildChart() {
+  const host = $('chartBody');
+  if (!host) return;
+  host.textContent = '';
+  const d = song.data;
+  if (!d) return;
+
+  $('chartHead').textContent = d.title;
+  $('chartSub').textContent =
+    `${d.tempo} bpm, ${d.feel}, ${d.barCount} bars, about ${songLength(d)} seconds. `
+    + `Grown from "${d.source}". Seed ${d.seed}.`
+    + (song.note ? ' The shapes are standard-tuning fingerings, so it set the tuning back.' : '');
+
+  const counts = {};
+  for (const s of d.sections) counts[s.name] = (counts[s.name] || 0) + 1;
+
+  for (const s of d.sections) {
+    const row = document.createElement('div');
+    row.className = 'crow';
+
+    const lab = document.createElement('div');
+    lab.className = 'clab';
+    lab.textContent = s.name + (counts[s.name] > 1 ? ' ' + s.pass : '');
+    const sub = document.createElement('small');
+    sub.textContent = s.pattern + (s.picked ? ', picked' : '');
+    lab.appendChild(sub);
+    row.appendChild(lab);
+
+    const bars = document.createElement('div');
+    bars.className = 'cbars';
+    s.chords.forEach((name, i) => {
+      const b = d.bars[s.from + i];
+      const cell = document.createElement('div');
+      cell.className = 'cbar' + (b && b.fill ? ' turn' : '') + (b && b.ring ? ' ring' : '');
+      cell.dataset.bar = String(s.from + i);
+      cell.textContent = name;
+      bars.appendChild(cell);
+    });
+    row.appendChild(bars);
+
+    host.appendChild(row);
+  }
+}
+
+function markChart(b) {
+  const host = $('chartBody');
+  if (!host) return;
+  const on = host.querySelector('.cbar.on');
+  if (on) on.classList.remove('on');
+  if (b < 0) return;
+  const cell = host.querySelector(`.cbar[data-bar="${b}"]`);
+  if (cell) cell.classList.add('on');
 }
 
 /* ================================================================
@@ -2604,6 +3232,9 @@ const KEYHELP = [
   ['Up / Down', 'Softer or harder'],
   ['Left / Right', 'Move the capo'],
   ['Enter', 'Start and stop the strum pattern'],
+  ['N', 'Compose a new song'],
+  ['P', 'Play or stop the composed song'],
+  ['L', 'Show its chart'],
   ['R', 'Record'],
   ['Drag on the neck', 'Fret a note. Keep dragging along the string to slide'],
   ['Drag over the soundhole', 'Strum. Faster drag, harder strum'],
@@ -2665,6 +3296,9 @@ window.addEventListener('keydown', async (e) => {
   if (k === 'arrowleft') { setCapo(state.capo - 1); e.preventDefault(); return; }
   if (k === 'enter') { $('strumBtn').click(); e.preventDefault(); return; }
   if (k === 'r') { $('recBtn').click(); return; }
+  if (k === 'n') { compose(); return; }
+  if (k === 'p') { $('songBtn').click(); return; }
+  if (k === 'l') { $('chartBtn').click(); return; }
 });
 window.addEventListener('keyup', (e) => {
   const k = e.key.toLowerCase();
@@ -2801,6 +3435,9 @@ function init() {
     $('strumBtn').classList.toggle('on', seq.on);
     if (seq.on) startSeq(); else maybeStopSeq();
   };
+  $('composeBtn').onclick = () => { compose(); };
+  $('songBtn').onclick = () => { if (song.playing) songStop(); else songStart(); };
+  $('chartBtn').onclick = () => { if (song.data) { buildChart(); markChart(song.bar); $('chartSheet').classList.add('open'); } };
   $('metroBtn').onclick = async () => {
     if (!audio.ready) await startAudio();
     seq.metro = !seq.metro;
@@ -2850,6 +3487,11 @@ function init() {
 
   try { io.coarse = window.matchMedia('(pointer: coarse)').matches; } catch (e) { io.coarse = 'ontouchstart' in window; }
   refreshMode();
+
+  /* a seed in the address bar is a whole song: load it, but do not start it */
+  const seeded = /[#&?]s=(\d+)/.exec(location.hash);
+  songReadout();
+  if (seeded) compose(Number(seeded[1]));
 
   resize();
   window.addEventListener('resize', resize);
