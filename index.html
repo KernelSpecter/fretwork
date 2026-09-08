@@ -202,7 +202,7 @@ select:focus-visible,.btn:focus-visible{outline:1px solid var(--lamp);outline-of
 .cbar.turn{border-bottom-color:#6a5a3a}
 .cbar.ring{border-color:#4a4032;color:#e2d6b6}
 .cbar.on{background:linear-gradient(#4a3a18,#33270f);border-color:#7a6330;color:#f4e6bf}
-#app.drop::after{content:'Drop a recording, a MIDI file or a chord sheet';position:fixed;inset:0;z-index:40;
+#app.drop::after{content:'Drop a tab, a recording, a MIDI file or a chord sheet';position:fixed;inset:0;z-index:40;
   display:flex;align-items:center;justify-content:center;pointer-events:none;
   background:rgba(6,5,4,.72);color:#e6d8b4;font-size:14px;letter-spacing:.1em;
   box-shadow:inset 0 0 0 2px #7a6330}
@@ -929,7 +929,7 @@ registerProcessor('fretwork-tape', TapeProcessor);
           <button class="btn mini" id="chartBtn" disabled>Chart</button>
           <button class="btn mini on" id="fingersBtn">Fingers</button>
           <button class="btn mini on" id="melodyBtn">Tune</button>
-          <input type="file" id="songFile" accept=".mid,.midi,.txt,.chopro,.cho,.mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm,text/plain,audio/*"
+          <input type="file" id="songFile" accept=".musicxml,.xml,.mid,.midi,.txt,.chopro,.cho,.mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm,text/plain,audio/*"
                  style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
         </div>
         <div class="row">
@@ -1498,6 +1498,11 @@ const IMPORTER = (() => {
      where the fewest notes fall off the end. Octaves rather than semitones
      because a transposed key is still the same tune. */
   function bestShift(notes) {
+    /* Nothing to fit: a tab is already on the neck, and shifting it by an
+       octave would move it off the frets it names. */
+    if (notes.length && notes.every((n) => n.s !== undefined && n.fret !== undefined)) {
+      return { shift: 0, lost: 0 };
+    }
     let best = { shift: 0, lost: Infinity };
     for (const shift of [0, -12, 12, -24, 24, -36, 36]) {
       let lost = 0;
@@ -1530,6 +1535,19 @@ const IMPORTER = (() => {
       const taken = new Set();
 
       for (const n of group) {
+        /* A tab has already decided where this note is played, by somebody who
+           could see the whole arrangement. That beats a cost model looking at
+           one note at a time, so it is used as given and not second guessed.
+           Only a note with no placement goes through the reasoning below. */
+        if (n.s !== undefined && n.fret !== undefined && !taken.has(n.s)) {
+          taken.add(n.s);
+          if (busyUntil[n.s] > n.t + 1e-6) stolen++;
+          busyUntil[n.s] = n.t + n.d;
+          if (n.fret > 0) pos = pos * 0.72 + n.fret * 0.28;
+          out.push({ t: n.t, d: n.d, s: n.s, fret: n.fret, vel: n.vel, pitch: n.pitch, finger: n.finger });
+          continue;
+        }
+
         const cands = places(n.pitch + shift).filter((c) => !taken.has(c.s));
         if (!cands.length) { dropped++; continue; }
 
@@ -1558,13 +1576,15 @@ const IMPORTER = (() => {
   /* Which finger holds what. Frets are numbered from the lowest one the hand
      is currently over, so the same fret on two strings is one finger barring
      them, which is what a hand actually does. */
-  function fingersFor(held) {
+  function fingersFor(held, given) {
     const out = [0, 0, 0, 0, 0, 0];
     const frets = [...new Set(held.filter((f) => f > 0))].sort((a, b) => a - b);
     if (!frets.length) return out;
     const map = new Map();
     frets.forEach((f, k) => map.set(f, Math.min(4, k + 1)));
     for (let s = 0; s < 6; s++) if (held[s] > 0) out[s] = map.get(held[s]) || 0;
+    /* a tab that names the finger is worth more than working it out */
+    if (given && held[given.s] > 0) out[given.s] = given.finger;
     return out;
   }
 
@@ -1639,7 +1659,7 @@ const IMPORTER = (() => {
         vel: Math.max(0.08, Math.min(1, n.vel * 1.1)),
         bar: Math.floor(beat / beatsPerBar),
         held: held.slice(),
-        fingers: fingersFor(held),
+        fingers: fingersFor(held, n.finger ? { s: n.s, finger: n.finger } : null),
         note: noteName(n.pitch),
       });
     }
@@ -1698,6 +1718,81 @@ const IMPORTER = (() => {
     };
   }
 
+  /* A tab, already laid out by whoever transcribed it. Nothing here infers
+     anything: the notes, their lengths, the strings, the frets and often the
+     fingers all come out of the file. This is the only path in the page that
+     plays a piece exactly rather than approximately. */
+  function fromTab(tab, name) {
+    const bpm = Math.max(30, Math.min(300, Math.round(tab.bpm || 96)));
+    const beatsPerBar = tab.beatsPerBar || 4;
+
+    const timed = tab.notes.map((n) => ({
+      t: (n.startQ * 60) / bpm,
+      d: Math.max(0.05, (n.q * 60) / bpm),
+      pitch: n.pitch,
+      vel: n.vel,
+      s: n.s,
+      fret: n.fret,
+      finger: n.finger,
+    }));
+
+    /* Where a file gives both a pitch and a string and fret, the two can
+       disagree: a transposing editor or a capo setting will do it. The tab
+       wins, because that is what a guitarist plays off the page, but the
+       argument is counted and reported rather than passed over in silence. */
+    let mismatched = 0;
+    for (const n of timed) {
+      if (n.s === undefined || n.fret === undefined) continue;
+      if (OPEN[n.s] + n.fret !== n.pitch) mismatched++;
+    }
+
+    const out = layOut(timed, bpm, beatsPerBar);
+    const events = out.events;
+    const barCount = Math.max(tab.bars || 0, events.length ? events[events.length - 1].bar + 1 : 0);
+
+    const bars = [];
+    for (let b = 0; b < barCount; b++) {
+      bars.push({
+        chord: '', frets: [-1, -1, -1, -1, -1, -1], shape: -1,
+        sectionName: 'Notes', section: 0, notes: [],
+      });
+    }
+    for (const e of events) {
+      const bar = bars[e.bar];
+      if (!bar) continue;
+      if (bar.notes.length < 4 && !bar.notes.includes(e.note)) bar.notes.push(e.note);
+      bar.frets = e.held.slice();
+    }
+    for (const bar of bars) bar.chord = bar.notes.join(' ') || '·';
+
+    return {
+      data: {
+        kind: 'tab',
+        source: name || 'a tab',
+        title: tab.title || (name || 'Tab').replace(/\.[^.]+$/, ''),
+        tempo: bpm,
+        feel: 'straight',
+        beatsPerBar: beatsPerBar,
+        barCount: barCount,
+        bars: bars,
+        notes: events.length,
+        part: tab.part,
+        parts: tab.parts,
+        tabbed: tab.tabbed,
+        total: tab.total,
+        mismatched: mismatched,
+        dropped: out.dropped,
+        sections: [{
+          name: 'Notes', pass: 1, from: 0, bars: barCount,
+          chords: bars.map((b) => b.chord), pattern: 'as written',
+          picked: true, dyn: 1, source: name || 'tab',
+        }],
+      },
+      events: events,
+      endBeat: events.length ? events[events.length - 1].beat + 4 : 0,
+    };
+  }
+
   function fromChart(text, ref, name) {
     const parsed = parseChart(text, ref);
     if (!parsed.bars.length) throw new Error('no chords I recognise in this file');
@@ -1743,7 +1838,7 @@ const IMPORTER = (() => {
 
   return {
     parseMidi: parseMidi, secondsOf: secondsOf, parseChart: parseChart,
-    fromMidi: fromMidi, fromChart: fromChart,
+    fromMidi: fromMidi, fromChart: fromChart, fromTab: fromTab,
     places: places, assign: assign, bestShift: bestShift, fingersFor: fingersFor,
     layOut: layOut,
     noteName: noteName, OPEN: OPEN, MAX_FRET: MAX_FRET, HAND_SPAN: HAND_SPAN,
@@ -2544,6 +2639,307 @@ const LISTENER = (() => {
     scoreChord: scoreChord, shapeFinder: shapeFinder, fft: fft,
     RATE: RATE, FRAME: FRAME, HOP: HOP, TEMPLATES: TEMPLATES,
     NAMES_SHARP: NAMES_SHARP, NAMES_FLAT: NAMES_FLAT,
+  };
+})();
+</script>
+<script id="tab">
+/* fretwork tab reader
+   Reads MusicXML, which is what every notation program exports and what tab
+   sites hand out: Guitar Pro, MuseScore, Sibelius and the rest all write it.
+   Pure: text in, notes out. No DOM, no audio, one global, so dev/tab.mjs
+   pulls it out of index.html and checks it in node.
+
+   Why this is the only way to play something exactly. Everything the listener
+   does is inference: it hears a recording and guesses. A tab is not a guess.
+   Somebody has already worked out every note, and for a guitar part they have
+   also worked out which string and which fret, which is more than a MIDI file
+   knows. So where the file says string 3 fret 2, that is what gets played and
+   the cost model that guesses at positions is not consulted at all. */
+const TAB = (() => {
+  'use strict';
+
+  const STEP = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+
+  /* ---------------------------------------------------------------- xml */
+
+  const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+  function unescapeXml(t) {
+    return t.replace(/&(#x?[0-9a-fA-F]+|amp|lt|gt|quot|apos);/g, (m, e) => {
+      if (e[0] === '#') return String.fromCodePoint(parseInt(e[1] === 'x' || e[1] === 'X' ? e.slice(2) : e.slice(1), e[1] === 'x' || e[1] === 'X' ? 16 : 10));
+      return ENTITIES[e] !== undefined ? ENTITIES[e] : m;
+    });
+  }
+
+  /* Enough XML for MusicXML, which is regular and machine written. A node is
+     { name, attrs, kids, text }. Deliberately small: a general parser is not
+     needed to read a format nothing hand-edits. */
+  function parseXml(src) {
+    const text = String(src).replace(/^﻿/, '');
+    const root = { name: '#root', attrs: {}, kids: [], text: '' };
+    const stack = [root];
+    let i = 0;
+
+    while (i < text.length) {
+      const lt = text.indexOf('<', i);
+      if (lt < 0) break;
+      if (lt > i) {
+        const chunk = text.slice(i, lt);
+        if (chunk.trim()) stack[stack.length - 1].text += unescapeXml(chunk);
+      }
+
+      if (text.startsWith('<!--', lt)) { i = text.indexOf('-->', lt); i = i < 0 ? text.length : i + 3; continue; }
+      if (text.startsWith('<![CDATA[', lt)) {
+        const end = text.indexOf(']]>', lt);
+        stack[stack.length - 1].text += text.slice(lt + 9, end < 0 ? text.length : end);
+        i = end < 0 ? text.length : end + 3;
+        continue;
+      }
+      if (text.startsWith('<?', lt)) { i = text.indexOf('?>', lt); i = i < 0 ? text.length : i + 2; continue; }
+      if (text.startsWith('<!', lt)) {
+        /* a DOCTYPE, which may carry a bracketed internal subset */
+        let depth = 0;
+        let k = lt;
+        for (; k < text.length; k++) {
+          if (text[k] === '[') depth++;
+          else if (text[k] === ']') depth--;
+          else if (text[k] === '>' && depth <= 0) break;
+        }
+        i = k + 1;
+        continue;
+      }
+
+      const gt = text.indexOf('>', lt);
+      if (gt < 0) break;
+      const inner = text.slice(lt + 1, gt);
+
+      if (inner[0] === '/') {
+        const name = inner.slice(1).trim();
+        for (let d = stack.length - 1; d > 0; d--) {
+          if (stack[d].name === name) { stack.length = d; break; }
+        }
+        i = gt + 1;
+        continue;
+      }
+
+      const selfClosing = inner.endsWith('/');
+      const body = selfClosing ? inner.slice(0, -1) : inner;
+      const sp = body.search(/[\s]/);
+      const name = (sp < 0 ? body : body.slice(0, sp)).trim();
+      const attrs = {};
+      if (sp >= 0) {
+        const re = /([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g;
+        let m;
+        while ((m = re.exec(body.slice(sp)))) attrs[m[1]] = unescapeXml(m[3] !== undefined ? m[3] : m[4]);
+      }
+
+      const node = { name: name, attrs: attrs, kids: [], text: '' };
+      stack[stack.length - 1].kids.push(node);
+      if (!selfClosing) stack.push(node);
+      i = gt + 1;
+    }
+    return root;
+  }
+
+  const kid = (node, name) => (node && node.kids ? node.kids.find((k) => k.name === name) : undefined);
+  const kids = (node, name) => (node && node.kids ? node.kids.filter((k) => k.name === name) : []);
+  const txt = (node, name) => {
+    const k = kid(node, name);
+    return k ? k.text.trim() : '';
+  };
+  const num = (node, name, dflt) => {
+    const v = parseFloat(txt(node, name));
+    return Number.isFinite(v) ? v : dflt;
+  };
+  /* the first matching descendant, at any depth */
+  function deep(node, name) {
+    if (!node || !node.kids) return undefined;
+    for (const k of node.kids) {
+      if (k.name === name) return k;
+      const found = deep(k, name);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  /* ---------------------------------------------------------------- musicxml */
+
+  function midiOf(pitchNode) {
+    const step = STEP[txt(pitchNode, 'step').toUpperCase()];
+    if (step === undefined) return null;
+    const octave = num(pitchNode, 'octave', 4);
+    const alter = num(pitchNode, 'alter', 0);
+    return (octave + 1) * 12 + step + alter;
+  }
+
+  /* Which part to play. A tab file often carries several: the guitar, a bass,
+     maybe a vocal line. The one that names strings and frets is the guitar
+     part and is what this is for, so it wins; failing that, the first. */
+  function choosePart(parts) {
+    const withTab = parts.filter((p) => deep(p.node, 'fret'));
+    if (withTab.length) {
+      return withTab.reduce((a, b) => (kids(b.node, 'measure').length > kids(a.node, 'measure').length ? b : a));
+    }
+    return parts[0];
+  }
+
+  function readPart(part) {
+    let divisions = 1;
+    let bpm = 0;
+    let beatsPerBar = 4;
+    let beatUnit = 4;
+    const notes = [];
+    const measures = [];
+
+    /* a note tied onward is one note, not two, so it waits here to be extended */
+    const open = new Map();
+
+    let barStart = 0;                  // in quarter notes, from the beginning
+    kids(part, 'measure').forEach((measure, mi) => {
+      const attrs = kid(measure, 'attributes');
+      if (attrs) {
+        const d = num(attrs, 'divisions', 0);
+        if (d > 0) divisions = d;
+        const time = kid(attrs, 'time');
+        if (time) {
+          beatsPerBar = num(time, 'beats', beatsPerBar);
+          beatUnit = num(time, 'beat-type', beatUnit);
+        }
+      }
+      for (const dir of kids(measure, 'direction')) {
+        const sound = deep(dir, 'sound');
+        if (sound && sound.attrs.tempo) bpm = parseFloat(sound.attrs.tempo) || bpm;
+      }
+      const sound = kid(measure, 'sound');
+      if (sound && sound.attrs.tempo) bpm = parseFloat(sound.attrs.tempo) || bpm;
+
+      const barQuarters = beatsPerBar * (4 / beatUnit);
+      measures.push({ index: mi, start: barStart, quarters: barQuarters });
+
+      let cursor = 0;                  // in divisions, within this measure
+      let lastOnset = 0;
+
+      for (const node of measure.kids) {
+        if (node.name === 'backup') { cursor -= num(node, 'duration', 0); continue; }
+        if (node.name === 'forward') { cursor += num(node, 'duration', 0); continue; }
+        if (node.name !== 'note') continue;
+
+        const dur = num(node, 'duration', 0);
+        const isChord = !!kid(node, 'chord');
+        const isGrace = !!kid(node, 'grace');
+        const isRest = !!kid(node, 'rest');
+        const onset = isChord ? lastOnset : cursor;
+
+        if (!isGrace && !isChord) lastOnset = cursor;
+        if (!isChord && !isGrace) cursor += dur;
+
+        if (isRest || isGrace) continue;
+        if (kid(node, 'unpitched')) continue;          // percussion staff
+
+        const pitchNode = kid(node, 'pitch');
+        if (!pitchNode) continue;
+        const midi = midiOf(pitchNode);
+        if (midi === null) continue;
+
+        /* where on the neck, if the file says. This is the whole point of
+           reading a tab rather than a MIDI file. */
+        const tech = deep(node, 'technical');
+        let sIdx;
+        let fret;
+        if (tech) {
+          const sv = parseInt(txt(tech, 'string'), 10);
+          const fv = parseInt(txt(tech, 'fret'), 10);
+          /* MusicXML numbers strings from the highest sounding one; this
+             counts from the lowest, so they run opposite ways */
+          if (Number.isFinite(sv) && sv >= 1 && sv <= 6) sIdx = 6 - sv;
+          if (Number.isFinite(fv) && fv >= 0) fret = fv;
+        }
+        const fingerText = tech ? txt(tech, 'fingering') : '';
+        const finger = /^[1-4]$/.test(fingerText) ? +fingerText : 0;
+
+        const tied = kids(node, 'tie').map((t) => t.attrs.type)
+          .concat(deep(node, 'tied') ? [deep(node, 'tied').attrs.type] : []);
+        const stops = tied.includes('stop');
+        const starts = tied.includes('start');
+
+        const startQ = barStart + onset / divisions;
+        const lenQ = Math.max(dur / divisions, 1 / 32);
+
+        if (stops && open.has(midi)) {
+          const prev = open.get(midi);
+          prev.q += lenQ;
+          if (!starts) open.delete(midi);
+          continue;
+        }
+
+        const note = {
+          q: lenQ,                                    // length in quarter notes
+          startQ: startQ,
+          pitch: midi,
+          vel: 0.78,
+          bar: mi,
+          s: sIdx,
+          fret: (sIdx !== undefined && fret !== undefined) ? fret : undefined,
+          finger: finger,
+        };
+        notes.push(note);
+        if (starts) open.set(midi, note);
+      }
+
+      barStart += barQuarters;
+    });
+
+    return { notes: notes, bpm: bpm, beatsPerBar: beatsPerBar * (4 / beatUnit), measures: measures, divisions: divisions };
+  }
+
+  /* text -> { notes, bpm, beatsPerBar, ... } in quarter notes, or throws */
+  function fromMusicXml(source) {
+    const root = parseXml(source);
+    const score = kid(root, 'score-partwise') || kid(root, 'score-timewise') || deep(root, 'score-partwise');
+    if (!score) throw new Error('this is not a MusicXML file');
+    if (kid(root, 'score-timewise') || (score && score.name === 'score-timewise')) {
+      throw new Error('timewise MusicXML is not supported; export it partwise');
+    }
+
+    const partNodes = kids(score, 'part');
+    if (!partNodes.length) throw new Error('no parts in this score');
+
+    const list = kid(score, 'part-list');
+    const named = partNodes.map((node) => {
+      const id = node.attrs.id;
+      let label = '';
+      if (list) {
+        const sp = kids(list, 'score-part').find((q) => q.attrs.id === id);
+        if (sp) label = txt(sp, 'part-name');
+      }
+      return { node: node, id: id, name: label };
+    });
+
+    const pick = choosePart(named);
+    const read = readPart(pick.node);
+    if (!read.notes.length) throw new Error('no playable notes in this score');
+
+    const title = txt(deep(score, 'work'), 'work-title')
+      || (deep(score, 'movement-title') ? deep(score, 'movement-title').text.trim() : '');
+
+    const tabbed = read.notes.filter((n) => n.s !== undefined && n.fret !== undefined).length;
+
+    return {
+      notes: read.notes,
+      bpm: read.bpm || 0,
+      beatsPerBar: read.beatsPerBar || 4,
+      bars: read.measures.length,
+      title: title,
+      part: pick.name || pick.id || '',
+      parts: named.map((p) => p.name || p.id),
+      tabbed: tabbed,
+      total: read.notes.length,
+    };
+  }
+
+  return {
+    parseXml: parseXml, fromMusicXml: fromMusicXml, readPart: readPart,
+    midiOf: midiOf, choosePart: choosePart,
+    kid: kid, kids: kids, txt: txt, deep: deep,
   };
 })();
 </script>
@@ -4400,9 +4796,16 @@ const LISTEN_MAX_SEC = 240;
 async function loadSong(file) {
   const name = file.name || 'a file';
   const midi = /\.midi?$/i.test(name) || /midi/i.test(file.type || '');
-  const isAudio = !midi && (AUDIO_RE.test(name) || /^audio\//.test(file.type || ''));
+  const isTab = /\.(musicxml|mxl|xml)$/i.test(name);
+  const isAudio = !midi && !isTab && (AUDIO_RE.test(name) || /^audio\//.test(file.type || ''));
   try {
     let out;
+    if (isTab) {
+      if (/\.mxl$/i.test(name)) {
+        throw new Error('.mxl is a zipped MusicXML; export it as uncompressed MusicXML');
+      }
+      out = IMPORTER.fromTab(TAB.fromMusicXml(await file.text()), name);
+    } else
     if (isAudio) {
       if (!audio.ready && !(await startAudio())) throw new Error('the audio engine would not start');
       const el = $('songRd');
@@ -4463,6 +4866,13 @@ async function loadSong(file) {
     if (opt) $('tempoSel').value = opt.value;
 
     const notes = [];
+    if (d.kind === 'tab') {
+      notes.push(`${d.notes} notes, as written`);
+      if (d.tabbed) notes.push(`${d.tabbed} of ${d.total} with the string and fret from the file`);
+      if (d.part) notes.push(`part: ${d.part}`);
+      if (d.mismatched) notes.push(`${d.mismatched} where the written note and the tab disagree, playing the tab`);
+      if (d.dropped) notes.push(`${d.dropped} out of reach`);
+    }
     if (d.kind === 'midi') {
       notes.push(`${d.notes} notes`);
       if (d.shift) notes.push(`moved ${Math.abs(d.shift) / 12} octave${Math.abs(d.shift) === 12 ? '' : 's'} ${d.shift > 0 ? 'up' : 'down'} to fit the neck`);
@@ -4634,6 +5044,9 @@ function buildChart() {
   $('chartHead').textContent = d.title;
   const where = d.seed !== undefined ? `Grown from "${d.source}". Seed ${d.seed}.`
     : d.kind === 'midi' ? `Read off ${d.source}, ${d.notes} notes across ${d.tracks} track${d.tracks === 1 ? '' : 's'}.`
+      : d.kind === 'tab' ? `Read off ${d.source}, ${d.notes} notes as written`
+        + (d.tabbed ? `, ${d.tabbed} of them with the string and fret given by the file rather than worked out.` : '.')
+        + (d.parts && d.parts.length > 1 ? ` It has ${d.parts.length} parts and this is "${d.part}".` : '')
       : d.kind === 'audio' ? `Heard in ${d.source}: ${d.key}, and the tempo found in the recording itself. `
         + `Every chord is the best fit for what is under that bar, ${Math.round(d.confidence * 100)}% on average, `
         + 'and a paler cell is one it is less sure of.'
@@ -4828,7 +5241,7 @@ const KEYHELP = [
   ['Up / Down', 'Softer or harder'],
   ['Left / Right', 'Move the capo'],
   ['Enter', 'Start and stop the strum pattern'],
-  ['O', 'Open a recording, a MIDI file or a chord sheet, or drop one on the page'],
+  ['O', 'Open a tab, a recording, a MIDI file or a chord sheet, or drop one on the page'],
   ['N', 'Compose a new song'],
   ['F', 'Show or hide the fingering on the neck'],
   ['T', 'Play the tune over the chords, or just the chords'],

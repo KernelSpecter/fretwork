@@ -188,6 +188,24 @@ to be an absolute figure, not a percentile — a percentile discards a fixed
 share of every recording however much of it is singing, and at the 55th it
 lost nearly half the notes of a plain monophonic line.
 
+**A tab** — MusicXML, which is what every notation program exports and what
+tab sites hand out: Guitar Pro, MuseScore and Sibelius all write it. This is
+the only input to the page that is not a guess. The listener infers, the
+arranger invents, and the MIDI importer works out where on the neck a pitch
+might go; a tab already knows, because somebody worked out the whole
+arrangement, and for a guitar part they also wrote down which string and
+which fret. So where the file says string three fret two, that is what gets
+played, at the moment the file says, with the finger the file names, and the
+cost model that guesses at positions is not consulted at all. If you want a
+piece played exactly, this is the way to do it.
+
+Where a file gives both a written pitch and a string and fret that disagree —
+a transposing editor or a capo setting will do that — the tab wins, because
+that is what a guitarist plays off the page, and the count of disagreements is
+reported rather than passed over. A score with no tab staff still plays; its
+notes go through the same placement pass as a MIDI file. `.mxl` is a zipped
+MusicXML and is refused with an explanation: export it uncompressed.
+
 **A MIDI file** — every note, where the file put it. A MIDI file says which
 notes and when, never where on the neck, and that is the whole problem: each
 pitch can be played in up to six places, a string sounds one note at a time,
@@ -291,6 +309,7 @@ node dev/check-data.mjs    # the chord and tuning data
 node dev/song.mjs          # the arranger, pulled out of index.html
 node dev/song.mjs --show   # print a derived song as a chart
 node dev/import.mjs        # the MIDI and chord sheet importer
+node dev/tab.mjs           # the MusicXML tab reader
 node dev/listen.mjs        # what it hears in a recording, against signals it builds
 node dev/listen.mjs --show # print what it heard in each one
 node dev/keys.mjs          # every documented key, in a real browser

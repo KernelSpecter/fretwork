@@ -1013,6 +1013,100 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
   await page.evaluate(() => { songStop(); });
 }
 
+/* ---------- 13. a tab, through the real file input ----------
+   dev/tab.mjs checks the reader. What only works here is the whole journey:
+   a .musicxml going through the input, and the notes reaching the engine on
+   the strings and frets the file named rather than ones worked out for them. */
+{
+  const OPEN_MIDI = [40, 45, 50, 55, 59, 64];
+  const STEPS = ['C', 'C', 'D', 'D', 'E', 'F', 'F', 'G', 'G', 'A', 'A', 'B'];
+  const ALTER = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
+  const pitchXml = (midi) => {
+    const pc = ((midi % 12) + 12) % 12;
+    return `<pitch><step>${STEPS[pc]}</step>${ALTER[pc] ? '<alter>1</alter>' : ''}<octave>${Math.floor(midi / 12) - 1}</octave></pitch>`;
+  };
+  /* a short phrase, every note placed by the file: string, fret and finger */
+  const spots = [[5, 0, 0], [4, 2, 2], [3, 2, 3], [2, 0, 0], [3, 2, 3], [4, 2, 2]];
+  const notes = spots.map(([string, fret, finger]) => {
+    const midi = OPEN_MIDI[6 - string] + fret;
+    return `<note>${pitchXml(midi)}<duration>4</duration>`
+      + `<notations><technical><string>${string}</string><fret>${fret}</fret>`
+      + `${finger ? `<fingering>${finger}</fingering>` : ''}</technical></notations></note>`;
+  });
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+<work><work-title>Through The Input</work-title></work>
+<part-list><score-part id="P1"><part-name>Guitar</part-name></score-part></part-list>
+<part id="P1">
+<measure number="1"><attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+<direction><sound tempo="120"/></direction>${notes.slice(0, 4).join('')}</measure>
+<measure number="2">${notes.slice(4).join('')}</measure>
+</part></score-partwise>`;
+
+  await page.setInputFiles('#songFile', { name: 'phrase.musicxml', mimeType: 'application/xml', buffer: Buffer.from(xml, 'utf8') });
+  await wait(300);
+
+  const got = await page.evaluate(() => ({
+    kind: song.data.kind,
+    title: song.data.title,
+    tempo: song.data.tempo,
+    bars: song.data.barCount,
+    tabbed: song.data.tabbed,
+    total: song.data.total,
+    mismatched: song.data.mismatched,
+    events: song.ev.length,
+    where: song.ev.map((e) => `${e.string}/${e.fret}`),
+    fingers: song.ev.map((e) => e.fingers[e.string]),
+    beats: song.ev.map((e) => +e.beat.toFixed(2)),
+    readout: $('songRd').textContent,
+  }));
+
+  check('a tab opened through the file input becomes a playable song',
+    got.kind === 'tab' && got.title === 'Through The Input' && got.tempo === 120 && got.events === 6,
+    `${got.title}: ${got.events} notes over ${got.bars} bars at ${got.tempo} bpm`);
+  check('every note of it says it came off the tab, not off a guess',
+    got.tabbed === got.total && got.total === 6 && got.mismatched === 0,
+    `${got.tabbed} of ${got.total} tabbed, ${got.mismatched} disagreeing`);
+  check('and each note is played exactly where the file put it',
+    String(got.where) === String(['1/0', '2/2', '3/2', '4/0', '3/2', '2/2']), got.where.join(' '));
+  check('with the file’s own fingering',
+    String(got.fingers) === String([0, 2, 3, 0, 3, 2]), got.fingers.join(','));
+  check('at the file’s own moments', String(got.beats) === String([0, 1, 2, 3, 4, 5]), got.beats.join(','));
+  check('and the readout says the notes came from the tab', /as written/.test(got.readout), got.readout);
+
+  /* it plays, and what reaches the engine is those notes */
+  const played = await page.evaluate(() => {
+    const real = window.post;
+    const stream = [];
+    window.post = (m) => { stream.push(Object.assign({}, m)); };
+    song.i = 0; song.queued = -1;
+    song.t0 = audio.ctx.currentTime + 0.2;
+    song.playing = true;
+    songSchedule(Infinity);
+    song.playing = false;
+    window.post = real;
+
+    const plucks = stream.filter((m) => m.t === 'pluck');
+    let wrong = 0;
+    plucks.forEach((m, i) => {
+      const e = song.ev[i];
+      if (!e || Math.abs(noteFreq(e.string, e.fret) - m.freq) > 0.02) wrong++;
+    });
+    return { plucks: plucks.length, wrong: wrong, noAt: stream.filter((m) => m.at === undefined).length };
+  });
+  check('playing a tab sends exactly its notes to the engine, each with its own time',
+    played.plucks === 6 && played.wrong === 0 && played.noAt === 0,
+    `${played.plucks} notes, ${played.wrong} wrong, ${played.noAt} untimed`);
+
+  /* a zipped one is refused with an answer rather than a stack trace */
+  await page.setInputFiles('#songFile', { name: 'squashed.mxl', mimeType: 'application/zip', buffer: Buffer.from([0x50, 0x4b, 3, 4, 0, 0]) });
+  await wait(200);
+  const zipped = await page.evaluate(() => $('songRd').textContent);
+  check('a zipped MusicXML says what to do about it', /uncompressed MusicXML/.test(zipped), zipped);
+
+  await page.evaluate(() => { songStop(); });
+}
+
 console.log(errs.length ? `\npage errors:\n  ${errs.join('\n  ')}` : '\nno page errors');
 if (errs.length) fails++;
 console.log(`\n${fails ? fails + ' failing' : 'everything behaves'}`);
