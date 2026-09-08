@@ -1655,7 +1655,7 @@ const IMPORTER = (() => {
 
     const barCount = events.length ? events[events.length - 1].bar + 1 : 0;
     const bars = [];
-    for (let b = 0; b < barCount; b++) bars.push({ chord: '', frets: [-1, -1, -1, -1, -1, -1], shape: -1, sectionName: 'Bar', section: 0, notes: [] });
+    for (let b = 0; b < barCount; b++) bars.push({ chord: '', frets: [-1, -1, -1, -1, -1, -1], shape: -1, sectionName: 'Notes', section: 0, notes: [] });
     for (const e of events) {
       const bar = bars[e.bar];
       if (bar.notes.length < 4 && !bar.notes.includes(e.note)) bar.notes.push(e.note);
@@ -1673,7 +1673,7 @@ const IMPORTER = (() => {
         beatsPerBar,
         barCount,
         bars,
-        sections: [{ name: 'Imported', pass: 1, from: 0, bars: barCount, chords: bars.map((b) => b.chord), pattern: 'as written', picked: true, dyn: 1, source: name || 'MIDI' }],
+        sections: [{ name: 'Notes', pass: 1, from: 0, bars: barCount, chords: bars.map((b) => b.chord), pattern: 'as written', picked: true, dyn: 1, source: name || 'MIDI' }],
         notes: laid.notes.length,
         shift,
         dropped: laid.dropped + lost * 0,
@@ -1903,6 +1903,15 @@ const LISTENER = (() => {
 
   const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 
+  /* the plain mean of every frame, before any normalising */
+  function rawAverage(rows) {
+    const acc = new Float32Array(12);
+    if (!rows.length) return acc;
+    for (const row of rows) for (let p = 0; p < 12; p++) acc[p] += row[p];
+    for (let p = 0; p < 12; p++) acc[p] /= rows.length;
+    return acc;
+  }
+
   /* Slide a pulse train over the envelope: the offset where the pulses land on
      the most onset energy is where beat one is. */
   function findPhase(env, lag, fps) {
@@ -1923,7 +1932,14 @@ const LISTENER = (() => {
      onto twelve pitch classes reads its own overtones louder than its root and
      comes out as B minor. This gives each pitch class credit for the harmonics
      it would have produced, which puts the root back on top. */
-  function salience(raw) {
+  /* Run once on a whole bar's worth of chroma, never on a single frame.
+     Normalising each frame first was the mistake that cost the most: it makes
+     every frame's loudest pitch class a 1.0, so averaging a bar of them lifts
+     anything that was ever briefly loudest and the result comes out nearly
+     flat. On a dense mix every pitch class sat between 0.74 and 0.99 and
+     whichever three were marginally highest won, which is how a whole track
+     became D minor. Aggregate first, normalise once, then sharpen. */
+  function finish(raw) {
     const out = new Float32Array(12);
     for (let p = 0; p < 12; p++) {
       out[p] = raw[p]
@@ -1932,7 +1948,14 @@ const LISTENER = (() => {
     }
     let max = 0;
     for (let p = 0; p < 12; p++) if (out[p] > max) max = out[p];
-    if (max > 0) for (let p = 0; p < 12; p++) out[p] /= max;
+    if (max <= 0) return out;
+    /* Sharpen. Three pitch classes out of twelve are in the chord, so the
+       useful signal is in which ones stand out, not in the floor they stand
+       on. Squaring pushes the floor down without moving the order. */
+    for (let p = 0; p < 12; p++) {
+      const v = out[p] / max;
+      out[p] = v * v;
+    }
     return out;
   }
 
@@ -1961,16 +1984,39 @@ const LISTENER = (() => {
       map.push({ pc: ((near % 12) + 12) % 12, w: w * oct });
     }
 
+    /* How wide a neighbourhood counts as "the background here". About 130Hz
+       at this resolution: wide enough to sit under a harmonic peak, narrow
+       enough to follow the shape of the mix. */
+    const W = 24;
+
     for (let f = 0; f < spec.frames; f++) {
       const row = new Float32Array(12);
       const mag = spec.mag[f];
+
+      /* Whitening. A harmonic is a peak standing above the noise around it,
+         and only the part standing above counts. Compressing the raw
+         magnitude instead, as this did with a log, lifts the floor until the
+         bleed and the reverb between the notes contribute nearly as much as
+         the notes, which is what flattened the chroma on a real mix. */
+      let sum = 0;
+      for (let k = 0; k < Math.min(W, spec.bins); k++) sum += mag[k];
+      let lo2 = 0, hi2 = Math.min(W, spec.bins) - 1;
+
       for (let k = 1; k < spec.bins; k++) {
+        /* slide the window that measures the background */
+        const want0 = Math.max(0, k - W), want1 = Math.min(spec.bins - 1, k + W);
+        while (hi2 < want1) { hi2++; sum += mag[hi2]; }
+        while (lo2 < want0) { sum -= mag[lo2]; lo2++; }
+        const bg = sum / Math.max(1, hi2 - lo2 + 1);
+
         const m = map[k - 1];
         if (!m || !m.w) continue;
-        row[m.pc] += Math.log1p(mag[k] * 40) * m.w;
+        const above = mag[k] - bg;
+        if (above <= 0) continue;
+        /* a mild compression, so one loud note cannot own the whole bar */
+        row[m.pc] += Math.sqrt(above) * m.w;
       }
-      let max = 0;
-      out.push(salience(row));
+      out.push(row);
     }
     return out;
   }
@@ -2190,7 +2236,7 @@ const LISTENER = (() => {
     const chroma = chromagram(spec);
     /* the same fold again but only under 260Hz, which is the bass */
     const bassChroma = chromagram(spec, 38, 300);
-    const key = findKey(chroma);
+    const key = findKey([finish(rawAverage(chroma))]);
 
     /* black notes get spelled the way the key spells them */
     const flats = [3, 8, 10, 1, 5].includes(key.root) || (key.minor && [2, 7, 0].includes(key.root));
@@ -2207,7 +2253,8 @@ const LISTENER = (() => {
         n++;
       }
       if (n) for (let p = 0; p < 12; p++) acc[p] /= n;
-      return acc;
+      /* normalised and sharpened once, here, on the whole bar */
+      return finish(acc);
     };
     const cut = (start, b) => Math.floor(((start + b * barSec) * RATE) / HOP);
 
@@ -2258,7 +2305,7 @@ const LISTENER = (() => {
         patName: pat.name,
         dyn: 0.82,
         section: 0,
-        sectionName: 'Heard',
+        sectionName: 'Chords',
         fill: false,
         ring: b === chords.length - 1,
         confidence: c.confidence,
@@ -2286,7 +2333,7 @@ const LISTENER = (() => {
       seconds: seconds,
       unplayable: unplayable,
       sections: [{
-        name: 'Heard', pass: 1, from: 0, bars: bars.length,
+        name: 'Chords', pass: 1, from: 0, bars: bars.length,
         chords: bars.map((b) => b.chord), pattern: pat.name,
         picked: Math.max.apply(null, pat.accents) <= 0.8, dyn: 0.82, source: 'the recording',
       }],
@@ -2297,6 +2344,7 @@ const LISTENER = (() => {
     listen: listen, condition: condition, spectrogram: spectrogram,
     onsetStrength: onsetStrength, findTempo: findTempo, findPhase: findPhase,
     chromagram: chromagram, chordTrack: chordTrack, findKey: findKey,
+    finish: finish, rawAverage: rawAverage,
     scoreChord: scoreChord, shapeFinder: shapeFinder, fft: fft,
     RATE: RATE, FRAME: FRAME, HOP: HOP, TEMPLATES: TEMPLATES,
     NAMES_SHARP: NAMES_SHARP, NAMES_FLAT: NAMES_FLAT,
@@ -4197,7 +4245,7 @@ async function loadSong(file) {
       if (d.dropped) notes.push(`${d.dropped} out of reach`);
     }
     if (d.kind === 'audio') {
-      notes.push(`heard ${d.key}`);
+      notes.push(`key of ${d.key}`);
       notes.push(`${Math.round(d.confidence * 100)}% sure of the chords`);
       if (d.confidence < 0.45) notes.push('a dense mix, so treat the chart as a first guess');
       if (d.clipped) notes.push(`listened to the first ${LISTEN_MAX_SEC / 60} minutes`);

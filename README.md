@@ -136,15 +136,30 @@ finished mix is an open research problem, and the things that do it well are
 trained neural networks far larger than this whole page. This does what a
 guitarist does with a record: finds the tempo, the key, and the chord under
 each bar. That is well understood signal processing with no model in it, and it
-is right about nine times in ten on a clean recording of one instrument,
-decent on a small band, and approximate on a dense mix. So it tells you how
+is right about nineteen times in twenty on a clean recording of one
+instrument, decent with drums over it, and on a dense produced mix it will
+follow the changes without being reliable bar by bar. So it tells you how
 sure it is, the chart fades the cells it is least confident about, and a low
 score says so in words instead of hiding it. Treat a busy mix as a first
 guess to correct by ear, which is what a chord sheet off the internet is
 anyway.
 
-Two things worth knowing about the method, both of which were wrong first and
-found by measuring. A note brings its own overtones with it and they are not
+Three things worth knowing about the method, all of which were wrong first and
+found by measuring on a real recording rather than on the synthetic signals
+that already worked.
+
+The largest: normalise once, after aggregating, never per frame. Scaling each
+frame so its loudest pitch class is 1.0 and *then* averaging a bar of them
+lifts anything that was ever briefly loudest, and the result comes out nearly
+flat. On a real mix every pitch class sat between 0.74 and 0.99, whichever
+three were marginally highest won, and a whole track came back as one chord
+held from beginning to end at 45% confidence. It looks plausible, which is the
+worst kind of wrong. Aggregating first, normalising once and squaring to
+sharpen took that track to two chords alternating at 81%, and the synthetic
+cases from 89% to 97%. Related: a harmonic is a peak standing *above* the
+noise around it, so only the part standing above is counted; compressing the
+raw magnitude with a log instead lifts the floor until the bleed between the
+notes contributes as much as the notes. A note brings its own overtones with it and they are not
 it: the third harmonic of a G is a D and the fifth is a B, so a G chord folded
 straight onto twelve pitch classes reads its own overtones louder than its
 root and comes out as B minor. Every pitch class therefore gets credit for the
