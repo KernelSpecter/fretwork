@@ -75,6 +75,25 @@ function render(seq, bpm, opts) {
     }
   });
   if (o.noise) for (let i = 0; i < n; i++) buf[i] += (Math.random() - 0.5) * o.noise;
+
+  /* Drums, roughly: a broadband thump on the beat and a hiss off it. This is
+     what makes a real record hard. It does not change which chord is right,
+     it flattens how much better the right one looks than the wrong ones, and
+     that is the thing that broke the chord tracker. */
+  if (o.drums) {
+    for (let bar = 0; bar < seq.length; bar++) {
+      for (let b = 0; b < 8; b++) {
+        const t0 = Math.round((bar * barSec + (b * beat) / 2) * rate);
+        const len = Math.min(Math.round(rate * (b % 2 ? 0.06 : 0.13)), n - t0);
+        const amp = (b % 2 ? 0.10 : 0.30) * o.drums;
+        for (let i = 0; i < len; i++) {
+          const env = Math.exp(-i / (rate * 0.03));
+          buf[t0 + i] += amp * env * (Math.random() - 0.5) * 2;
+          if (!(b % 2)) buf[t0 + i] += amp * 0.8 * env * Math.sin((2 * Math.PI * 58 * i) / rate);
+        }
+      }
+    }
+  }
   return { channels: [buf], rate };
 }
 
@@ -167,6 +186,60 @@ function score(heard, seq, bpm) {
 }
 
 {
+  /* The regression that matters, and the one the cases below did not catch.
+     Every template fits a dense mix badly and by similar amounts, so the fits
+     within a bar are small and close together. A bonus for holding the same
+     chord that is an absolute number is then larger than the whole of the
+     evidence, and the best path through the track is one chord held from
+     beginning to end. It looks plausible and it is completely wrong: a real
+     song came back as forty bars of D minor.
+
+     So: eight bars that genuinely alternate, with barely any contrast in
+     them. It has to follow the change. */
+  const segs = [];
+  const roots = [0, 7, 0, 7, 0, 7, 0, 7];          // C G C G ...
+  for (const root of roots) {
+    const seg = new Float32Array(12).fill(0.5);     // a wash over everything
+    for (const t of [0, 4, 7]) seg[(root + t) % 12] += 0.06;
+    segs.push(seg);
+  }
+  const faint = L.chordTrack(segs, false, null);
+  const distinct = new Set(faint.map((c) => c.name));
+  check('a chord change with barely any contrast is still followed',
+    distinct.size >= 2, `came back as ${[...distinct].join(', ')}`);
+  const right = faint.filter((c, i) => c.name === (i % 2 ? 'G' : 'C')).length;
+  check('and the faint chords are the right ones', right >= 6, `${right}/8: ${faint.map((c) => c.name).join(' ')}`);
+
+  /* the same alternation with plenty of contrast must not be smoothed away
+     either, and the confidence must still be reported on the raw scale */
+  const bold = [];
+  for (const root of roots) {
+    const seg = new Float32Array(12).fill(0.05);
+    for (const t of [0, 4, 7]) seg[(root + t) % 12] = 1;
+    bold.push(seg);
+  }
+  const clear = L.chordTrack(bold, false, null);
+  check('a clear alternation comes back as an alternation',
+    new Set(clear.map((c) => c.name)).size === 2 && clear[0].name !== clear[1].name,
+    clear.map((c) => c.name).join(' '));
+  check('confidence is higher for the clear one than the faint one',
+    clear[0].confidence > faint[0].confidence,
+    `${Math.round(clear[0].confidence * 100)}% against ${Math.round(faint[0].confidence * 100)}%`);
+
+  /* and a track that really does sit on one chord is allowed to say so */
+  const held = [];
+  for (let i = 0; i < 8; i++) {
+    const seg = new Float32Array(12).fill(0.1);
+    for (const t of [0, 3, 7]) seg[(9 + t) % 12] = 1;    // Am throughout
+    held.push(seg);
+  }
+  const oneChord = L.chordTrack(held, false, null);
+  check('a track that really is one chord still comes back as one chord',
+    new Set(oneChord.map((c) => c.name)).size === 1 && oneChord[0].name === 'Am',
+    oneChord.map((c) => c.name).join(' '));
+}
+
+{
   const find = L.shapeFinder(REF, 12);
   const missing = [];
   for (let root = 0; root < 12; root++) {
@@ -207,6 +280,8 @@ const CASES = [
   { label: 'noisy', seq: ['G', 'D', 'Em', 'C', 'G', 'D', 'Em', 'C'], bpm: 96, opts: { noise: 0.06 }, floor: 0.55 },
   { label: 'sevenths in it', seq: ['C', 'Am', 'Dm', 'G7', 'C', 'Am', 'Dm', 'G7'], bpm: 108, opts: {}, floor: 0.55 },
   { label: 'two hits a bar', seq: ['C', 'Am', 'F', 'G', 'C', 'Am', 'F', 'G'], bpm: 100, opts: { hits: 2 }, floor: 0.7 },
+  { label: 'drums over it', seq: ['C', 'Am', 'F', 'G', 'C', 'Am', 'F', 'G'], bpm: 100, opts: { drums: 1, noise: 0.03 }, floor: 0.4, changes: 3 },
+  { label: 'loud drums', seq: ['Am', 'F', 'C', 'G', 'Am', 'F', 'C', 'G'], bpm: 92, opts: { drums: 1.8, noise: 0.05 }, floor: 0.3, changes: 3 },
 ];
 
 let allHits = 0, allOf = 0;
@@ -224,6 +299,15 @@ for (const c of CASES) {
   check(`"${c.label}" comes back at least ${Math.round(c.floor * 100)}% right`,
     frac >= c.floor - 1e-9 && heard.barCount > 0,
     `${s.hits}/${s.of} bars, ${heard.tempo} bpm against ${c.bpm}, ${Math.round(heard.confidence * 100)}% sure`);
+
+  /* A chart that never changes chord is the failure this exists to catch, and
+     it can score well on a progression that happens to sit on one chord, so
+     the cases that change say how much they must change by. */
+  if (c.changes) {
+    const distinct = new Set(heard.bars.map((b) => b.chord)).size;
+    check(`and "${c.label}" does not collapse to one chord`,
+      distinct >= c.changes, `${distinct} distinct chords over ${heard.barCount} bars: ${heard.bars.map((b) => b.chord).join(' ')}`);
+  }
 
   if (process.argv.includes('--show')) {
     console.log(`         want ${c.seq.join(' ')}`);

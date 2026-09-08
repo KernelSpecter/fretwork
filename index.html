@@ -2046,14 +2046,32 @@ const LISTENER = (() => {
       const row = [];
       const bass = basses ? basses[i] : null;
       for (let root = 0; root < 12; root++) {
-        for (const tpl of TEMPLATES) row.push({ root: root, tpl: tpl, score: scoreChord(seg, root, tpl, bass) });
+        for (const tpl of TEMPLATES) {
+          row.push({ root: root, tpl: tpl, raw: scoreChord(seg, root, tpl, bass) });
+        }
       }
+
+      /* Standardise the fits within each bar before they go anywhere near the
+         transition bonus below. How well a template can possibly fit depends
+         entirely on how clean the recording is: a solo guitar scores around
+         0.8 and a full mix with drums over it scores around 0.05, with the
+         gaps between candidates shrinking to match. An absolute bonus for
+         holding the same chord is therefore nothing on the first and larger
+         than the entire fit on the second, which collapsed a whole track to
+         one chord. Scoring in standard deviations from this bar's own mean
+         makes the bonus mean the same thing on both. */
+      const mu = mean(row.map((r) => r.raw));
+      const sd = Math.sqrt(mean(row.map((r) => (r.raw - mu) * (r.raw - mu)))) || 1e-9;
+      for (const r of row) r.score = (r.raw - mu) / sd;
+
       row.sort((a, b) => b.score - a.score);
-      cands.push(row.slice(0, 6));
+      cands.push(row.slice(0, 8));
     });
 
-    /* a small dynamic program: fit, plus a bonus for staying put */
-    const STAY = 0.16;
+    /* A small dynamic program: fit, plus a bonus for staying put. In standard
+       deviations, so this reads as "only change chord if the new one fits
+       about half a deviation better than holding the old one". */
+    const STAY = 0.5;
     let prev = cands[0].map((c) => ({ c: c, total: c.score, from: -1 }));
     const table = [prev];
     for (let i = 1; i < cands.length; i++) {
@@ -2084,7 +2102,7 @@ const LISTENER = (() => {
       name: names[c.root] + c.tpl.suffix,
       root: c.root,
       suffix: c.tpl.suffix,
-      confidence: Math.max(0, Math.min(1, c.score)),
+      confidence: Math.max(0, Math.min(1, c.raw)),
     }));
   }
 
@@ -2221,7 +2239,10 @@ const LISTENER = (() => {
 
     /* how busy the record is decides what it gets strummed with */
     const perBar = mean(Array.from(env)) * spec.fps * beat;
-    const pool = ref.strumPatterns.filter((p) => p.feel === 'straight');
+    /* No X slots: a muted chuck is a stylistic decision, not something that
+       can be read off a recording, and picking it because a track is busy
+       turns every dense mix into a percussion part. */
+    const pool = ref.strumPatterns.filter((p) => p.feel === 'straight' && !p.slots.includes('X'));
     pool.sort((a, b) => a.slots.filter((s) => s !== '-').length - b.slots.filter((s) => s !== '-').length);
     const pat = pool[Math.min(pool.length - 1, Math.max(0, Math.round(perBar * 2)))] || ref.strumPatterns[0];
 
