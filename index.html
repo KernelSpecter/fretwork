@@ -394,6 +394,31 @@ class GuitarString {
        so it goes through a bandpass rather than coming out as white noise. */
     this.noiseEnv = 0; this.noiseBp = new Biquad(); this.noiseBp.bandpass(2100, 0.9, rate);
     this.fretNoise = 0.5;
+
+    /* Finger squeak, which is a different sound from the contact noise above
+       and needs a different generator. A fingertip dragged along a wound
+       string does not hiss, it skips over the windings one at a time, and the
+       rate of those crossings is the pitch you hear. A hand moving between
+       two positions accelerates off the mark and brakes onto the target, so
+       that rate rises and falls: a squeak is a chirp. One fixed band of noise
+       can never be one, however it is enveloped. */
+    this.sqEnv = 0; this.sqI = 0; this.sqStep = 0; this.sqPhase = 1;
+    this.sqFmin = 500; this.sqFpk = 2000; this.sqGain = 0; this.sqRough = 0.5;
+    /* A squeak asked for while one is still sounding cannot simply replace it:
+       the envelope would step from wherever it had got to straight down to
+       zero, which is a click. The outgoing one is released instead. */
+    this.sqRel = 0; this.sqLastEnv = 0;
+    /* What makes a screech metallic is a harmonic series, not a single band.
+       A narrow filter swept along with the crossing rate gives the right
+       pitch and almost nothing above it: measured, the second harmonic came
+       out 14 dB down and only 2.4% of the energy was above 3 kHz, which is a
+       whistle, not a scraped string. So the crossings drive a comb tuned to
+       their own period instead, exactly as the string itself is a delay tuned
+       to its pitch, and the whole series comes out with it. */
+    this.sqD = new Delay(256);
+    this.sqFb = new OnePole(); this.sqFb.g = 0.28;
+    this.sqBp = new Biquad(); this.sqBp.bandpass(1900, 0.62, rate);
+    this.sqLp = new OnePole(); this.sqLp.g = 0.42;
     this.pan = 0;
     this.lastOut = 0;
     /* mirrors the bridge filter on this string alone, so the bridge bus can
@@ -516,6 +541,29 @@ class GuitarString {
     this.ringing = true;
   }
 
+  /* The crossing rate is handed in already worked out, because the arithmetic
+     needs the string gauge and the fret spacing and this class knows neither. */
+  squeak(cfg) {
+    const dur = clamp(cfg.dur === undefined ? 0.07 : cfg.dur, 0.012, 0.4);
+    this.sqStep = 1 / Math.max(1, Math.round(dur * this.rate));
+    this.sqI = 0;
+    this.sqFpk = clamp(cfg.fpk === undefined ? 2000 : cfg.fpk, 100, this.rate * 0.4);
+    this.sqFmin = clamp(cfg.fmin === undefined ? this.sqFpk * 0.25 : cfg.fmin, 50, this.sqFpk);
+    this.sqGain = clamp(cfg.g === undefined ? 0.5 : cfg.g, 0, 4) * this.fretNoise;
+    this.sqRough = clamp(cfg.rough === undefined ? 0.5 : cfg.rough, 0, 1);
+    this.sqPhase = 1;   // cross a winding on the first sample
+    /* Starting cold, so whatever the last squeak left in the comb does not
+       ring out under this one. Mid-release it is left alone: that content is
+       the sound being carried over. */
+    if (this.sqEnv === 0) { this.sqD.clear(); this.sqFb.reset(); this.sqBp.reset(); }
+    this.sqRel = this.sqLastEnv;
+    this.sqEnv = this.sqGain > 0 ? 1 : 0;
+    /* Silenced by the Fingers knob rather than played: the release would
+       never run, so it must not be left behind for the next squeak to
+       start on top of. */
+    if (this.sqEnv === 0) { this.sqRel = 0; this.sqLastEnv = 0; }
+  }
+
   step(coupleIn) {
     if (this.fadeN > 0) {
       this.fadeI++;
@@ -572,6 +620,60 @@ class GuitarString {
     const a = out < 0 ? -out : out;
     this.level += a > this.level ? (a - this.level) * 0.02 : (a - this.level) * 0.0004;
     if (this.level < 1e-5) { this.level = 0; this.ringing = false; }
+
+    /* Added after the level follower, not before it: a hand moving between
+       two chords is heard across a gap, so this has to sound on a string that
+       is not ringing, and a string that is not ringing must not light up on
+       the neck or count as ringing when the next note decides whether it has
+       to choke one first. */
+    if (this.sqEnv > 0) {
+      const t = this.sqI * this.sqStep;
+      if (t >= 1) { this.sqEnv = 0; this.sqLastEnv = 0; }
+      else {
+        const bell = Math.sin(Math.PI * t);
+        const f = this.sqFmin + (this.sqFpk - this.sqFmin) * bell;
+        this.sqI++;
+        this.sqPhase += f / this.rate;
+        let exc = 0;
+        if (this.sqPhase >= 1) {
+          this.sqPhase -= 1;
+          /* stick-slip: the finger catches and releases rather than crossing
+             every winding at the same weight, which is what stops a clean
+             sweep sounding like a synthesiser */
+          exc = 1 - this.sqRough * (0.5 + 0.5 * this.rng());
+        }
+        /* the scrape of skin over metal, under the crossings */
+        exc += this.sqLp.process(this.rng()) * 0.5 * this.sqRough;
+
+        /* The comb is tuned to the crossing period, so it rings at the
+           crossing rate and at every harmonic of it, and it glides when the
+           hand does. The read is 4-point Lagrange and has no state, which is
+           what makes a delay length that moves every sample safe here. */
+        const per = clamp(this.rate / f, 6, 240);
+        const ring = this.sqD.read(per);
+        this.sqD.write(exc * 0.5 + this.sqFb.process(ring) * 0.82);
+        /* The envelope is the bell squared, so it leaves and arrives at
+           exactly zero, and it never drops below the release left behind by a
+           squeak this one interrupted. */
+        const sq = bell * bell;
+        const e = sq > this.sqRel ? sq : this.sqRel;
+        this.sqRel *= 0.999;
+        this.sqLastEnv = e;
+        /* Shaped bright and broad rather than narrow: a screech lives in the
+           metallic region above the crossing rate, and a resonant filter here
+           would ring at its own pitch between the crossings and fill the
+           sweep back in, which is the whole reason the first attempt at this
+           measured as a hiss. At Q 0.62 it colours without ringing, and 1.9
+           kHz puts the weight where a real squeak has it: about a third of
+           the energy above 3 kHz, bright and metallic rather than harsh.
+
+           The scale puts it about twenty decibels under a plucked note,
+           measured against one. Quiet, but it lands in a gap where nothing
+           else is sounding, and a squeak that competes with the chord it is
+           leading into is a fault, not a feature. */
+        out += this.sqBp.process(ring + exc * 0.7) * e * this.sqGain * 0.28;
+      }
+    }
     return out;
   }
 
@@ -582,6 +684,7 @@ class GuitarString {
   silence() {
     this.delay.clear(); this.lp.reset();
     this.level = 0; this.env = 0; this.fadeN = 0; this.noiseEnv = 0;
+    this.sqEnv = 0; this.sqRel = 0; this.sqLastEnv = 0;
     this.state = ST_IDLE; this.pending = null;
   }
 }
@@ -714,6 +817,7 @@ class Guitar {
     const S = this.strings;
     switch (msg.t) {
       case 'pluck': { const s = S[msg.s]; if (s) s.pluck(msg); break; }
+      case 'squeak': { const s = S[msg.s]; if (s) s.squeak(msg); break; }
       case 'mute': { const s = S[msg.s]; if (s) s.choke(msg.a); break; }
       case 'allmute': { for (const s of S) s.choke(msg.a); break; }
       case 'bend': { const s = S[msg.s]; if (s) { s.bendCents = msg.c; s.recalc(); } break; }
@@ -3474,6 +3578,85 @@ function chuck(vel, when, frets) {
   }
 }
 
+/* Everything above this point is the sound of a note. This is the sound of
+   getting to it, which is most of what tells you a person is playing.
+
+   A fingertip pressed into a wound string and dragged along it crosses the
+   windings one at a time; the rate of those crossings is the pitch of the
+   squeak, so the arithmetic is speed over winding pitch. Both come out of
+   data the instrument already carries: the fret spacing from its scale
+   length, the winding pitch from the string gauge. That is why the thin
+   wound D squeals higher than the low E rather than both getting the same
+   noise, and why the plain trebles do not squeak at all.
+
+   Three things have to be true before a squeak can happen, and they are the
+   whole reason this does not sound like an effect sprayed over everything.
+   The string has to be wound. A finger has to be pressing it at both ends of
+   the move, since nothing is dragged off an open or a muted string. And the
+   hand itself has to travel: notes a fret or two apart are reached with a
+   different finger, not by sliding one along, so they make no squeak at all,
+   which is what stops a melodic line squealing on every note. Only a shift
+   past the span of the hand drags, and the further it goes the louder it
+   gets. */
+function fretMm(fret) { return state.inst.scale * (1 - Math.pow(2, -fret / 12)); }
+
+/* Returns the length of the longest squeak it scheduled, so a caller dragging
+   a finger can wait for one to finish instead of cutting it off. */
+function handMove(from, to, when, opts) {
+  if (!audio.ready || !from || !to) return 0;
+  opts = opts || {};
+  let longest = 0;
+  const inst = state.inst;
+  const lead = opts.lead !== false;
+  const t0 = when === undefined ? audio.ctx.currentTime : when;
+  const now = audio.ctx.currentTime;
+  for (let s = 0; s < 6; s++) {
+    if (s >= inst.wound) continue;              // no windings to skip
+    const a = from[s], b = to[s];
+    if (a === undefined || b === undefined) continue;
+    if (a <= 0 || b <= 0 || a === b) continue;  // open or unplayed: no finger to drag
+    const steps = Math.abs(b - a);
+    /* zero within a hand's span, full once the hand has plainly moved */
+    const loud = clamp((steps - 1.6) / 4, 0, 1);
+    if (loud <= 0) continue;
+    /* A player does not squeak on every shift, and pretending otherwise is as
+       unconvincing as never squeaking: about two in five of them, a little
+       more often the further the hand has had to go. */
+    if (!opts.always && Math.random() > 0.4 * (0.85 + loud * 0.3)) continue;
+
+    const dist = Math.abs(fretMm(b) - fretMm(a)) / 1000;
+    const dur = clamp(0.042 + steps * 0.012, 0.03, 0.17) * (opts.durMul || 1);
+    /* The hand accelerates off the mark and brakes onto the target, so its
+       speed over the move is a bell. A bell covering dist in dur peaks at
+       pi*dist/2dur, and the squeak is highest there, in the middle. */
+    const vpk = (Math.PI * dist) / (2 * dur);
+    /* The winding wire is about a third of the finished string's diameter,
+       and the crown of each winding is what the finger rides, so it skips a
+       fraction of them rather than counting every one. */
+    const pitchM = inst.gauges[s] * 0.0254 * 0.34;
+    const fpk = clamp((vpk / pitchM) * 0.55, 380, 5200);
+
+    /* The squeak ends where the note begins: it belongs in the gap before the
+       chord, which is what makes it audible at all. Under the attack it is
+       just masked. If there is no gap to put it in, there was nothing to
+       hear anyway. */
+    let at = lead ? t0 - dur : t0;
+    if (at < now + 0.002) {
+      if (lead) continue;
+      at = now + 0.002;
+    }
+    post({
+      t: 'squeak', s, at, dur, fpk,
+      fmin: fpk * (0.18 + Math.random() * 0.14),
+      g: loud * (0.45 + p.edge * 0.25) * (opts.gain || 1),
+      /* a slow short move creaks, a long fast one sings */
+      rough: clamp(0.34 + (1 - loud) * 0.42, 0, 1),
+    });
+    if (dur > longest) longest = dur;
+  }
+  return longest;
+}
+
 /* ================================================================
    4. how you are playing it
    ================================================================ */
@@ -4313,8 +4496,34 @@ cv.addEventListener('pointermove', (e) => {
   } else {
     const s = stringAt(b.y), f = fretAt(b.x);
     if (!onBoard(b)) return;
-    if (s !== t.s) { state.held[s] = f; pluck(s, f, state.vel); t.s = s; t.f = f; }
-    else if (f !== t.f) { state.held[s] = f; pluck(s, f, state.vel * 0.55, { slide: 0.0016 }); t.f = f; }
+    if (s !== t.s) {
+      state.held[s] = f; pluck(s, f, state.vel);
+      t.s = s; t.f = f;
+      /* a new string is a new drag, not a continuation of the last one */
+      t.sqF = f; t.sqUntil = 0;
+    }
+    else if (f !== t.f) {
+      state.held[s] = f;
+      /* A finger actually dragged along the string, which squeaks harder than
+         a chord change does, and always. A drag arrives as a stream of pointer
+         moves, so this waits for the running squeak to finish rather than
+         restarting one on every event, and measures from where that one began:
+         a slide across four frets is one rising squeak, not four little ones a
+         fret wide. */
+      if (now >= (t.sqUntil || 0)) {
+        const was = t.sqF === undefined ? t.f : t.sqF;
+        if (was !== f) {
+          const fa = [-1, -1, -1, -1, -1, -1], fb = fa.slice();
+          fa[s] = was; fb[s] = f;
+          const len = handMove(fa, fb, undefined,
+            { lead: false, always: true, gain: 1.6, durMul: 1.4 });
+          t.sqUntil = now + len * 1000;
+        }
+        t.sqF = f;
+      }
+      pluck(s, f, state.vel * 0.55, { slide: 0.0016 });
+      t.f = f;
+    }
   }
   e.preventDefault();
 });
@@ -4603,10 +4812,16 @@ function renderRail() {
 }
 
 function setChord(c) {
+  const was = state.held;
   state.chord = c;
   state.held = c.frets.slice();
   /* the shape carries its own fingering, so the derived one steps aside */
   state.fingers = null;
+  /* A hand picking a chord is moving now, and the strum comes after it. A
+     song's hands are dealt with where the song is scheduled instead: that
+     code knows when the chord will sound, so it can put the squeak in front
+     of the note rather than on top of it. */
+  if (!song.playing) handMove(was, state.held, undefined, { lead: false });
 }
 
 function openChords() { $('chordSheet').classList.add('open'); buildChordGrid(); }
@@ -4725,6 +4940,8 @@ function maybeStopSeq() {
 const song = {
   data: null, ev: [], i: 0, t0: 0, endBeat: 0,
   playing: false, bar: -1, queued: -1, note: '',
+  /* where the fretting hand is as far as the scheduler is concerned */
+  lastFret: null,
   /* Bumped every time the song changes or restarts. The neck is moved by
      timers set when an event was queued, which can be a whole song's worth
      still pending; without this they arrive late and move the hand of a song
@@ -4938,6 +5155,8 @@ async function songStart() {
 
   const first = CHORDS[song.data.bars[0].shape];
   if (first) setChord(first);
+  /* the hand starts where bar one is, so bar one is not squeaked into */
+  song.lastFret = state.held.slice();
 
   $('songBtn').classList.add('on');
   $('songBtn').textContent = 'Stop';
@@ -4952,6 +5171,7 @@ function songStop() {
   song.i = 0;
   song.bar = -1;
   song.queued = -1;
+  song.lastFret = null;
   const b = $('songBtn');
   if (b) { b.classList.remove('on'); b.textContent = 'Play'; }
   if (was) maybeStopSeq();
@@ -4969,6 +5189,15 @@ function songSchedule(horizon) {
     if (when > horizon) return;
 
     if (e.bar !== song.queued) { song.queued = e.bar; showBarAt(e.bar, when); }
+    /* The hand that has to move is diffed against a shadow kept on this
+       clock. state.held is no use here: it is moved by a timer that fires
+       when the bar can be heard, a whole lookahead window after this runs,
+       so diffing against it compares the new chord with one still to come. */
+    const dest = e.frets || e.held;
+    if (dest) {
+      if (song.lastFret) handMove(song.lastFret, dest, when);
+      song.lastFret = dest.slice();
+    }
     /* An imported file has no chord names to move between, so the hand it
        leaves behind travels with the note instead. It has to: the note is
        queued a seventh of a second before it sounds, and the neck must not

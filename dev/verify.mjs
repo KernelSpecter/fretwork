@@ -500,19 +500,169 @@ const fret = (open, f) => open * Math.pow(2, f / 12);
     `largest step through the change ${worst.toFixed(5)} against ${ref.toFixed(5)} while just ringing`);
 }
 
+/* ---------- 15. the sound of the hand getting there ----------
+   A finger dragged along a wound string does not hiss, it crosses the
+   windings one at a time, and the rate of those crossings is the pitch. The
+   hand accelerates off the mark and brakes onto the target, so that rate
+   rises and falls: a squeak is a chirp. Every check here has failed at least
+   once while it was being written, and the first two fail silently, which is
+   the only reason they are measured rather than read.
+
+   The first version of this was inaudible, and the second sounded like a band
+   of noise: the resonance was standing still while only the excitation swept,
+   so the filter rang at its own pitch between the crossings and filled the
+   sweep back in. Rendered and measured, the pitch had stopped moving. */
+{
+  const g = new E.Guitar(RATE);
+  const dur = 0.09, at = 0.1;
+  const { L } = render(g, 0.5, [{ at, msg: {
+    t: 'squeak', s: 0, dur, fpk: 2200, fmin: 460, g: 0.6, rough: 0.5 } }]);
+  const a = Math.round(at * RATE), b = Math.round((at + dur) * RATE);
+  const rms = (x, i, j) => {
+    let s = 0; for (let k = i; k < j; k++) s += x[k] * x[k];
+    return Math.sqrt(s / Math.max(1, j - i));
+  };
+
+  /* What this is for is a hand moving over the gap between two chords, so it
+     has to sound on a string that is doing nothing at all. An earlier version
+     put it inside the string's own envelope, where it was silent exactly when
+     it was wanted, and nothing short of a render says so. */
+  const quiet = rms(L, 0, a - 200), loud = rms(L, a, b);
+  check('a squeak sounds on a string that is not ringing at all',
+    loud > 1e-4 && loud > quiet * 50,
+    `${quiet.toExponential(2)} before it, ${loud.toExponential(2)} during`);
+
+  /* Measured by correlation, not by spectral centroid. The crossing rate is a
+     period in the signal and the spectrum above it is deliberately full of
+     harmonics, so a centroid mostly reports how many of them fit under the
+     shaping filter: it moved by 9% across a sweep that trebled in pitch. */
+  const crossRate = (frac) => {
+    const N = 512;
+    const off = Math.max(0, a + Math.round((b - a) * frac) - N / 2);
+    let best = 0, bestLag = 0;
+    for (let lag = 8; lag <= 150; lag++) {
+      let num = 0, d1 = 0, d2 = 0;
+      for (let i = 0; i < N; i++) {
+        const x = L[off + i], y = L[off + i + lag];
+        num += x * y; d1 += x * x; d2 += y * y;
+      }
+      const r = num / Math.sqrt(d1 * d2 + 1e-20);
+      if (r > best) { best = r; bestLag = lag; }
+    }
+    return bestLag ? RATE / bestLag : 0;
+  };
+  const rise = crossRate(0.12), top = crossRate(0.5), fall = crossRate(0.88);
+  check('and it is a chirp, rising with the hand and falling as it arrives',
+    top > rise * 1.3 && top > fall * 1.3,
+    `${Math.round(rise)} -> ${Math.round(top)} -> ${Math.round(fall)} Hz`);
+
+  /* It has to arrive and leave at exactly zero, or every squeak is two clicks. */
+  const step = (i, j) => { let m = 0; for (let k = i; k < j; k++) m = Math.max(m, Math.abs(L[k + 1] - L[k])); return m; };
+  const edges = Math.max(step(a - 60, a + 60), step(b - 60, b + 60));
+  const middle = step(a + 300, b - 300);
+  check('a squeak has no click at either end',
+    edges <= middle * 1.2, `edges ${edges.toExponential(2)} against ${middle.toExponential(2)} mid-squeak`);
+
+  /* The string is being touched, not sounded. If a squeak fed the level
+     follower the neck would light up over silent gaps, and worse, the next
+     note would believe it had a ringing string to choke before it could play. */
+  check('a squeak does not light the string up or count as ringing',
+    g.strings[0].level < 0.0035 && !g.strings[0].ringing,
+    `level ${g.strings[0].level.toExponential(2)}, ringing ${g.strings[0].ringing}`);
+
+  const bad = hasBadSamples(L);
+  check('and it stays finite', bad === null, bad || 'clean');
+}
+
+{
+  /* The winding pitch comes off the string gauge, so the thin wound D squeals
+     higher than the low E rather than both getting the same noise. This is
+     most of what makes it sound like a guitar and not like a sound effect. */
+  const hz = (s, fpk) => {
+    const g = new E.Guitar(RATE);
+    const { L } = render(g, 0.4, [{ at: 0.05, msg: {
+      t: 'squeak', s, dur: 0.09, fpk, fmin: fpk * 0.2, g: 0.6, rough: 0.5 } }]);
+    const from = Math.round(0.07 * RATE), to = Math.round(0.12 * RATE);
+    let c = 0;
+    for (let i = from + 1; i < to; i++) if ((L[i] < 0) !== (L[i - 1] < 0)) c++;
+    return (c * RATE) / (2 * (to - from));
+  };
+  /* the peaks the app works out for a five-fret move on each of them */
+  const lowE = hz(0, 2213), dStr = hz(2, 4419);
+  check('a thin wound string squeals higher than a thick one',
+    dStr > lowE * 1.4, `low E ${Math.round(lowE)} Hz, D ${Math.round(dStr)} Hz`);
+}
+
+{
+  /* A squeak asked for while one is still sounding cannot just replace it: the
+     envelope would step from wherever it had reached straight down to zero. A
+     finger dragged across the neck arrives as a stream of pointer moves, so
+     that was a burst of clicks in the one place this sound matters most.
+
+     Measured on the string on its own, because the body resonators ring for
+     long enough after a cut to hide it: through the whole instrument this
+     collapse and a clean join look the same to within a percent, and so does
+     the largest sample-to-sample step either way. */
+  const s = new E.GuitarString(RATE, 0, E.makeRng(0x1234));
+  s.fretNoise = 1;
+  const joins = [0.10, 0.17, 0.24];
+  const n = Math.round(0.5 * RATE);
+  const out = new Float32Array(n);
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    if (k < joins.length && i >= Math.round(joins[k] * RATE)) {
+      s.squeak({ dur: 0.14, fpk: 2600 + k * 600, fmin: 520 + k * 120, g: 0.7, rough: 0.4 });
+      k++;
+    }
+    out[i] = s.step(0);
+  }
+  const w = 128;
+  const rms = (i) => { let a = 0; for (let j = i; j < i + w; j++) a += out[j] * out[j]; return Math.sqrt(a / w); };
+  const carried = joins.slice(1).map((at) => {
+    const c = Math.round(at * RATE);
+    return rms(c) / (rms(c - w) || 1e-12);
+  });
+  check('a squeak cut off by the next one is released, not dropped',
+    carried.every((r) => r > 0.4),
+    'level across the joins ' + carried.map((r) => r.toFixed(2) + 'x').join(', ')
+      + ' (a hard cut reads 0.00x)');
+}
+
 /* ---------- optional: render something to listen to ---------- */
 if (process.argv.includes('--wav')) {
   const g = new E.Guitar(RATE);
   const ev = [];
   const chords = [
-    [0, 2, 2, 1, 0, 0],   // E
-    [-1, 0, 2, 2, 1, 0],  // Am
-    [3, 2, 0, 0, 0, 3],   // G
-    [-1, 3, 2, 0, 1, 0],  // C
+    [0, 2, 2, 1, 0, 0],     // E
+    [-1, 0, 2, 2, 1, 0],    // Am
+    [3, 5, 5, 4, 3, 3],     // G barre: the hand leaves open position
+    [8, 10, 10, 9, 8, 8],   // C barre, five frets further up
+    [3, 5, 5, 4, 3, 3],     // and back down again
   ];
   let t = 0;
+  let prev = null;
+  const SCALE = 645.16, fretMm = (f) => SCALE * (1 - Math.pow(2, -f / 12));
+  const GAUGE = [0.053, 0.042, 0.032, 0.024, 0.016, 0.012], WOUND = 4;
   for (let rep = 0; rep < 2; rep++) {
     for (const ch of chords) {
+      /* the hand getting to the chord, in the gap before the chord sounds */
+      if (prev) {
+        for (let s = 0; s < WOUND; s++) {
+          const from = prev[s], to = ch[s];
+          if (from <= 0 || to <= 0 || from === to) continue;
+          const steps = Math.abs(to - from);
+          const loud = Math.min(1, Math.max(0, (steps - 1.6) / 4));
+          if (loud <= 0) continue;
+          const dur = Math.min(0.17, 0.042 + steps * 0.012);
+          const dist = Math.abs(fretMm(to) - fretMm(from)) / 1000;
+          const vpk = (Math.PI * dist) / (2 * dur);
+          const fpk = Math.min(5200, Math.max(380, (vpk / (GAUGE[s] * 0.0254 * 0.34)) * 0.55));
+          ev.push({ at: t - dur, msg: {
+            t: 'squeak', s, dur, fpk, fmin: fpk * 0.22, g: loud * 0.575,
+            rough: 0.34 + (1 - loud) * 0.42 } });
+        }
+      }
+      prev = ch;
       for (let s = 0; s < 6; s++) {
         if (ch[s] < 0) continue;
         ev.push({ at: t + s * 0.016, msg: {

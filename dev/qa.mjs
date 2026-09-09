@@ -1107,6 +1107,151 @@ const clearWorst = () => page.evaluate(() => { window.__worst = { peak: 0, nan: 
   await page.evaluate(() => { songStop(); });
 }
 
+/* ---------- 14. the hand you can hear moving ----------
+   dev/verify.mjs checks that a squeak is a squeak. What only works here is
+   the wiring: that the rules about when a hand can squeak at all are applied
+   to real chord shapes, and that a squeak scheduled by the song lands in the
+   gap in front of the chord rather than underneath its attack.
+
+   The rules are physical, not stylistic. Nothing is dragged along a plain
+   string, because there are no windings to skip, and nothing is dragged off
+   an open or a muted one, because no finger is touching it. */
+{
+  const rules = await page.evaluate(() => {
+    const got = [];
+    const real = window.post;
+    window.post = (m) => { if (m.t === 'squeak') got.push(m); };
+    const barreG = [3, 5, 5, 4, 3, 3];
+    const barreC = [8, 10, 10, 9, 8, 8];
+    const open = [0, 0, 0, 0, 0, 0];
+    const muted = [-1, -1, -1, -1, -1, -1];
+    handMove(barreG, barreC, undefined, { lead: false, always: true });
+    const moved = got.length, strings = got.map((m) => m.s).sort();
+    got.length = 0;
+    handMove(open, barreC, undefined, { lead: false, always: true });
+    handMove(barreC, open, undefined, { lead: false, always: true });
+    handMove(muted, barreC, undefined, { lead: false, always: true });
+    handMove(barreC, barreC, undefined, { lead: false, always: true });
+    const nothing = got.length;
+    window.post = real;
+    return { moved, strings, nothing, wound: state.inst.wound };
+  });
+  check('a hand moving between two barre chords squeaks, and only on the wound strings',
+    rules.moved === rules.wound && rules.strings.every((s) => s < rules.wound),
+    `${rules.moved} squeaks on strings ${rules.strings.join(',')} of ${rules.wound} wound`);
+  check('nothing squeaks off an open string, a muted one, or a finger that did not move',
+    rules.nothing === 0, `${rules.nothing} squeaks with no finger to drag`);
+
+  /* The whole point is that it is heard between the chords. Scheduled at the
+     chord instead of before it, it is masked by the attack and the feature is
+     inaudible while looking perfectly correct in the code. */
+  const lead = await page.evaluate(() => {
+    const got = [];
+    const real = window.post;
+    window.post = (m) => { if (m.t === 'squeak') got.push(m); };
+    const when = audio.ctx.currentTime + 1;
+    handMove([3, 5, 5, 4, 3, 3], [8, 10, 10, 9, 8, 8], when, { always: true });
+    window.post = real;
+    return { when, got: got.map((m) => ({ at: m.at, dur: m.dur })) };
+  });
+  const overlap = lead.got.filter((m) => m.at + m.dur > lead.when + 1e-6);
+  check('a squeak ends where the chord begins, so it sounds in the gap and not under the attack',
+    lead.got.length > 0 && overlap.length === 0,
+    `${lead.got.length} squeaks, ${overlap.length} running into the chord`);
+
+  /* and the same thing through the scheduler, which is the path a song takes.
+     Math.random is pinned because a player does not squeak on every change,
+     so the real path is deliberately a coin toss. */
+  const sched = await page.evaluate(() => {
+    const stream = [];
+    const realPost = window.post;
+    const realRnd = Math.random;
+    window.post = (m) => stream.push(m);
+    Math.random = () => 0;
+    const G = [3, 5, 5, 4, 3, 3], C = [8, 10, 10, 9, 8, 8];
+    song.data = { bars: [{ shape: -1, chord: 'G', sectionName: 'a' }, { shape: -1, chord: 'C', sectionName: 'a' }],
+                  barCount: 2, beatsPerBar: 4, tempo: 120, title: 'squeaks', sections: [] };
+    song.ev = [{ beat: 0, bar: 0, kind: 'D', vel: 0.8, frets: G },
+               { beat: 4, bar: 1, kind: 'D', vel: 0.8, frets: C }];
+    song.endBeat = 8;
+    song.i = 0; song.bar = -1; song.queued = -1; song.lastFret = null;
+    song.playing = true;
+    song.t0 = audio.ctx.currentTime + 0.5;
+    songSchedule(Infinity);
+    song.playing = false;
+    Math.random = realRnd;
+    window.post = realPost;
+    const sq = stream.filter((m) => m.t === 'squeak');
+    /* The bar's own time, not the first pluck of its strum: the strum spreads
+       its six strings out and jitters them, so its earliest string lands a
+       fraction of a millisecond before the beat it belongs to. */
+    return {
+      sq: sq.map((m) => ({ s: m.s, start: m.at, end: m.at + m.dur })),
+      chord: songTime(4),
+    };
+  });
+  const late = sched.sq.filter((m) => m.end > sched.chord + 1e-6);
+  const crowded = sched.sq.filter((m) => m.start > sched.chord - 0.02);
+  check('a song squeaks its way into the next chord, ahead of the strum',
+    sched.sq.length > 0 && late.length === 0 && crowded.length === 0,
+    `${sched.sq.length} squeaks on strings ${sched.sq.map((m) => m.s).join(',')}, `
+    + `${late.length} running past the chord, ${crowded.length} with under 20ms of gap`);
+
+  /* Notes a fret or two apart are reached with a different finger, not by
+     sliding one along, so a melodic line must not squeal on every note. This
+     is the rule that is easiest to get wrong in a way that still looks
+     reasonable in the code, and it is measured through the real scheduler
+     because a tab and a chord chart reach it by different branches: a chart
+     hands the scheduler a whole chord, a tab hands it one note and five
+     unplayed strings. */
+  const line = await page.evaluate(() => {
+    const run = (spots) => {
+      const gs = [];
+      const realPost = window.post, realRnd = Math.random;
+      window.post = (m) => { if (m.t === 'squeak') gs.push(m.g); };
+      Math.random = () => 0;              // every squeak the rules allow
+      song.data = { bars: [{ shape: -1, chord: '', sectionName: 'a' }], barCount: 1,
+                    beatsPerBar: 4, tempo: 120, title: 'a line', sections: [] };
+      song.ev = spots.map((fret, i) => {
+        const held = [-1, -1, -1, -1, -1, -1];
+        held[0] = fret;
+        return { beat: i * 0.5, bar: 0, kind: 'P', string: 0, fret, vel: 0.7, held };
+      });
+      song.endBeat = spots.length * 0.5 + 4;
+      song.i = 0; song.bar = -1; song.queued = -1; song.lastFret = null;
+      song.playing = true;
+      song.t0 = audio.ctx.currentTime + 0.5;
+      songSchedule(Infinity);
+      song.playing = false;
+      Math.random = realRnd;
+      window.post = realPost;
+      return gs.length ? Math.max.apply(null, gs) : 0;
+    };
+    return { stepwise: run([3, 5, 7, 5, 3, 5, 7, 5, 3]), shifting: run([3, 10, 3, 10, 3]) };
+  });
+  check('a melodic line does not squeal on every note, but a shift out of position does',
+    line.stepwise <= line.shifting * 0.25 && line.shifting > 0.4,
+    `walking up the low E reaches ${line.stepwise.toFixed(3)}, `
+    + `a seven-fret shift ${line.shifting.toFixed(3)}`);
+
+  /* and it does not happen every time even when it can */
+  const often = await page.evaluate(() => {
+    const real = window.post;
+    let got = 0;
+    const N = 4000;
+    window.post = (m) => { if (m.t === 'squeak') got++; };
+    const fa = [-1, -1, -1, -1, -1, -1], fb = fa.slice();
+    fa[0] = 3; fb[0] = 8;
+    for (let i = 0; i < N; i++) handMove(fa, fb, undefined, { lead: false });
+    window.post = real;
+    return got / N;
+  });
+  check('a shift squeaks about two times in five rather than every time',
+    often > 0.3 && often < 0.52, `${Math.round(often * 100)}% of 4000 five-fret shifts squeaked`);
+
+  await page.evaluate(() => { songStop(); });
+}
+
 console.log(errs.length ? `\npage errors:\n  ${errs.join('\n  ')}` : '\nno page errors');
 if (errs.length) fails++;
 console.log(`\n${fails ? fails + ' failing' : 'everything behaves'}`);

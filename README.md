@@ -90,6 +90,51 @@ point, so it cancels whatever harmonic has a node there, which is most of
 what makes an electric guitar sound like its pickup position rather than
 like a generic string.
 
+What you hear between the chords is not the same generator as what you hear
+in them. A fingertip pressed into a wound string and dragged along it does
+not hiss: it crosses the windings one at a time, and the rate of those
+crossings is the pitch of the squeak. The arithmetic is speed over winding
+pitch, and both halves come out of data the instrument already carries, the
+fret spacing from its scale length and the winding pitch from the string
+gauge. A hand accelerates off the mark and brakes onto the target, so its
+speed over the move is a bell and the squeak is a chirp, rising and falling
+rather than sitting still.
+
+What makes that chirp sound metallic is a harmonic series, not a single band.
+Sweeping a narrow resonance along with the crossing rate gives the right
+pitch and almost nothing above it: measured, the second harmonic came out 14
+dB down and only 2.4% of the energy sat above 3 kHz, which is a whistle, not
+a scraped string. So the crossings drive a comb tuned to their own period
+instead, exactly as the string itself is a delay line tuned to its pitch, and
+the whole series comes out with it: the second and third harmonics now stand
+above the fundamental, there is still usable energy at 9 kHz, and a third of
+the total sits above 3 kHz. The comb is read with the same 4-point Lagrange
+interpolation as the strings, which is what makes a delay length that moves
+every sample safe to sweep. The pitch is then measured by correlation rather
+than by spectral centroid, because a centroid over a spectrum full of
+harmonics mostly reports how many of them fit under the shaping filter: it
+moved by 9% across a sweep that tripled in pitch.
+
+The rules about when a hand can squeak at all are physical, which is what
+keeps it from sounding sprayed over everything. The thin wound D squeals
+higher than the low E for the same reason a real one does; the plain trebles
+do not squeak, having no windings to skip; and nothing is dragged off an open
+or a muted string, there being no finger on it. Notes a fret or two apart are
+reached with a different finger rather than by sliding one along, so they make
+no squeak at all, which is what stops a melodic line squealing on every note:
+walking up the low E in whole tones peaks ten times quieter than one shift out
+of position. Only a move past the span of the hand drags, and even then it
+catches about two times in five rather than every time, a little more often
+the further the hand has had to go.
+
+Each squeak is scheduled to end where the note begins, so it sounds in the
+gap ahead of the chord rather than underneath its attack, where it would
+simply be masked. A finger dragged along the neck by hand gets one long
+rising squeak instead of one per fret, and a squeak cut short by the next one
+is released rather than dropped, because an envelope that steps to zero is a
+click. It sits about twenty decibels under a plucked note, measured against
+one. The Fingers knob sets how much of it there is, or none at all.
+
 ![The chord book](docs/chords.png)
 
 ## The reference data
@@ -317,7 +362,7 @@ node dev/qa.mjs            # pointers, the tape, the sequencer, resizing, knob e
 node dev/verify.mjs --wav  # renders dev/demo.wav if you would rather listen
 ```
 
-The DSP harness reports 19 of 19 checks passed: worst tuning error across the
+The DSP harness reports 26 of 26 checks passed: worst tuning error across the
 fretboard is 0.05 cents, the low E decays in 5.35 seconds against a requested
 5.5, a 30 second six-string ring stays finite with no NaNs and a tail
 4.07e-13 by the end, a re-pluck's worst sample-to-sample step is 0.01126
@@ -330,7 +375,16 @@ check the paths the interface actually uses: a note handed an absolute
 AudioContext time fires within 1 sample of it, a six string strum arrives
 spread over 60 ms rather than as one block chord, and a capo carries a
 ringing fretted note up with it, 146.8 Hz to 164.8 Hz, by sliding rather
-than jumping. The
+than jumping. Six more cover the squeak, and the first two of those are the
+only reason it is audible: it sounds on a string that is not ringing at all,
+and its crossing rate measures 1263 Hz rising to 2182 Hz and falling back to
+1371 Hz across a single 90 ms move rather than holding one number. It leaves
+and arrives at zero, it does not light the string up on the neck or count as
+ringing when the next note decides whether it has one to choke, the thin
+wound D squeals at 3990 Hz against 2350 Hz for the low E, and a squeak cut
+off by the next one is released rather than dropped, which is measured on the
+string alone because the body resonators ring for long enough afterwards to
+hide the difference. The
 data checker reports 96 voicings, 9 tunings, and 16 progressions checked, no
 problems found. The keyboard harness presses every documented key in a real browser and
 checks what the engine was actually told to do, 32 of 32 passing, including
@@ -338,7 +392,7 @@ that an upstroke really does reach fewer strings than a downstroke. The wider
 harness drives pointers (two at once), all four guitars, all nine tunings,
 all six spaces, every knob at both extremes, the tape end to end including
 the WAV header fields, the sequencer while everything under it changes, and
-eight viewport sizes from 200x200 to 2560x700: 30 of 30 passing, with the
+eight viewport sizes from 200x200 to 2560x700: 74 of 74 passing, with the
 worst peak anywhere in that sweep measuring 0.92 of full scale. It also
 measures the capo from the audio that comes back out of the tape rather
 than from the message that went in, within half a cent at the nut, the
